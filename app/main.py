@@ -42,8 +42,8 @@ logger.info(f"Files in current dir: {os.listdir('.')}")
 logger.info(f"PORT env var: {os.environ.get('PORT', 'NOT SET')}")
 logger.info(f"PYTHONPATH: {os.environ.get('PYTHONPATH', 'NOT SET')}")
 
-ASSET_VERSION = str(int(os.environ.get("RAILWAY_DEPLOYMENT_ID", "0") or "0"))
-if ASSET_VERSION == "0":
+ASSET_VERSION = str(os.environ.get("RAILWAY_DEPLOYMENT_ID", "") or "").strip()
+if not ASSET_VERSION:
     ASSET_VERSION = str(int(os.path.getmtime(__file__)))
 
 # Try importing FastAPI
