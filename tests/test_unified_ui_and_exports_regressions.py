@@ -9,6 +9,7 @@ class UnifiedUiGuards(unittest.TestCase):
         root = Path(__file__).resolve().parents[1]
         main_js = (root / "app" / "static" / "js" / "task-progress.js").read_text(encoding="utf-8")
         batch_js = (root / "app" / "static" / "js" / "task-progress-batch.js").read_text(encoding="utf-8")
+        unified_js = (root / "app" / "static" / "js" / "task-progress-unified.js").read_text(encoding="utf-8")
         template = (root / "app" / "templates" / "task_progress.html").read_text(encoding="utf-8")
 
         self.assertIn("unified_audit: 'Full SEO Audit'", main_js)
@@ -17,11 +18,14 @@ class UnifiedUiGuards(unittest.TestCase):
         self.assertIn("RUNNING: 'В работе'", main_js)
         self.assertIn("SUCCESS: 'Готово'", main_js)
         self.assertIn("FAILURE: 'Ошибка'", main_js)
-        self.assertIn("const cwvEntry = toolResults.cwv || toolResults.core_web_vitals || {}", main_js)
         self.assertIn("function _batchRenderSuccessDetails(item, toolType)", batch_js)
         self.assertIn("if (t.includes('robots')) {", batch_js)
         self.assertIn("title: `Batch ${_batchFriendlyToolLabel(toolType)}`", batch_js)
+        self.assertIn("function generateUnifiedAuditHTML(result)", unified_js)
+        self.assertIn("const cwvEntry = toolResults.cwv || toolResults.core_web_vitals || {}", unified_js)
+        self.assertIn("function downloadUnifiedAuditExport(format)", unified_js)
         self.assertIn('/static/js/task-progress-batch.js?v={{ app_version }}-{{ task_id }}', template)
+        self.assertIn('/static/js/task-progress-unified.js?v={{ app_version }}-{{ task_id }}', template)
 
     def test_history_has_friendly_unified_label(self):
         js_path = Path(__file__).resolve().parents[1] / "app" / "static" / "js" / "history.js"
