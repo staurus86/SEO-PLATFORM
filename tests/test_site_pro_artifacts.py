@@ -100,6 +100,65 @@ class SiteProArtifactsTests(unittest.TestCase):
 
         shutil.rmtree(chunk_root, ignore_errors=True)
 
+    def test_compacts_nested_page_and_semantic_fields(self):
+        service = SiteAuditProService()
+        public_payload = {
+            "summary": {"total_pages": 1, "issues_total": 1},
+            "pages": [
+                {
+                    "url": "https://site.test/p1",
+                    "status_code": 200,
+                    "health_score": 90,
+                    "topic_label": "t",
+                    "recommendation": "keep",
+                    "filler_phrases": [f"f{i}" for i in range(30)],
+                    "ai_markers_list": [f"a{i}" for i in range(30)],
+                    "top_keywords": [f"k{i}" for i in range(30)],
+                    "top_terms": [f"t{i}" for i in range(30)],
+                    "near_duplicate_urls": [f"https://site.test/d{i}" for i in range(30)],
+                    "semantic_links": [{"target_url": f"https://site.test/x{i}"} for i in range(30)],
+                    "broken_internal_targets": [f"https://site.test/b{i}" for i in range(30)],
+                    "keyword_density_profile": {f"kw{i}": i / 10 for i in range(40)},
+                }
+            ],
+            "issues": [{"url": "https://site.test/p1", "severity": "warning", "code": "x", "title": "X", "details": ""}],
+            "pipeline": {
+                "semantic_linking_map": [
+                    {
+                        "source_url": "https://site.test/p1",
+                        "target_url": "https://site.test/hub",
+                        "topic": "t",
+                        "reason": "r",
+                        "supporting_urls": [f"https://site.test/s{i}" for i in range(20)],
+                        "source_terms": [f"src{i}" for i in range(20)],
+                        "target_terms": [f"dst{i}" for i in range(20)],
+                    }
+                ]
+            },
+            "artifacts": {"chunk_manifest": {"chunks": []}},
+        }
+
+        service._compact_inline_payload(public_payload)
+        page = public_payload["pages"][0]
+        semantic_row = public_payload["pipeline"]["semantic_linking_map"][0]
+        nested = public_payload["artifacts"]["nested_omitted_counts"]
+
+        self.assertEqual(len(page["filler_phrases"]), 12)
+        self.assertEqual(len(page["ai_markers_list"]), 12)
+        self.assertEqual(len(page["top_keywords"]), 12)
+        self.assertEqual(len(page["top_terms"]), 12)
+        self.assertEqual(len(page["near_duplicate_urls"]), 10)
+        self.assertEqual(len(page["semantic_links"]), 20)
+        self.assertEqual(len(page["broken_internal_targets"]), 20)
+        self.assertEqual(len(page["keyword_density_profile"]), 20)
+        self.assertTrue(page["_storage_meta"]["payload_compacted"])
+        self.assertEqual(len(semantic_row["supporting_urls"]), 8)
+        self.assertEqual(len(semantic_row["source_terms"]), 8)
+        self.assertEqual(len(semantic_row["target_terms"]), 8)
+        self.assertTrue(semantic_row["_storage_meta"]["payload_compacted"])
+        self.assertGreater(nested["pages"], 0)
+        self.assertGreater(nested["semantic_linking_map"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()

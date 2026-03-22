@@ -166,6 +166,68 @@ class SiteAuditProService:
             value = int(default)
         return max(1, value)
 
+    @staticmethod
+    def _limit_list(values: Any, limit: int) -> tuple[Any, int]:
+        if not isinstance(values, list):
+            return values, 0
+        if len(values) <= limit:
+            return values, 0
+        return values[:limit], len(values) - limit
+
+    def _compact_page_row(self, row: Dict[str, Any]) -> tuple[Dict[str, Any], Dict[str, int]]:
+        compacted = dict(row or {})
+        omitted: Dict[str, int] = {}
+
+        for key, limit in (
+            ("filler_phrases", 12),
+            ("ai_markers_list", 12),
+            ("top_keywords", 12),
+            ("top_terms", 12),
+            ("near_duplicate_urls", 10),
+            ("semantic_links", 20),
+            ("broken_internal_targets", 20),
+        ):
+            limited, removed = self._limit_list(compacted.get(key), limit)
+            compacted[key] = limited
+            if removed > 0:
+                omitted[key] = removed
+
+        density_map = compacted.get("keyword_density_profile")
+        if isinstance(density_map, dict) and len(density_map) > 20:
+            ordered = sorted(
+                density_map.items(),
+                key=lambda item: float(item[1] or 0),
+                reverse=True,
+            )[:20]
+            compacted["keyword_density_profile"] = dict(ordered)
+            omitted["keyword_density_profile"] = len(density_map) - 20
+
+        if omitted:
+            compacted["_storage_meta"] = {
+                "payload_compacted": True,
+                "omitted_counts": omitted,
+            }
+        return compacted, omitted
+
+    def _compact_semantic_row(self, row: Dict[str, Any]) -> tuple[Dict[str, Any], Dict[str, int]]:
+        compacted = dict(row or {})
+        omitted: Dict[str, int] = {}
+        for key, limit in (
+            ("supporting_urls", 8),
+            ("source_terms", 8),
+            ("target_terms", 8),
+        ):
+            limited, removed = self._limit_list(compacted.get(key), limit)
+            compacted[key] = limited
+            if removed > 0:
+                omitted[key] = removed
+        if omitted:
+            compacted["_storage_meta"] = {
+                "payload_compacted": True,
+                "omitted_counts": omitted,
+            }
+        return compacted, omitted
+
     def _compact_inline_payload(self, public_results: Dict[str, Any]) -> None:
         """
         Keep task payload small when chunk artifacts are available.
@@ -187,15 +249,35 @@ class SiteAuditProService:
         }
 
         public_results["issues"] = issues[:issues_limit]
-        public_results["pages"] = pages[:pages_limit]
-        pipeline["semantic_linking_map"] = semantic[:semantic_limit]
+        compacted_pages = []
+        page_nested_omitted = 0
+        for row in pages[:pages_limit]:
+            compacted_row, row_omitted = self._compact_page_row(row)
+            compacted_pages.append(compacted_row)
+            page_nested_omitted += sum(row_omitted.values())
+        compacted_semantic = []
+        semantic_nested_omitted = 0
+        for row in semantic[:semantic_limit]:
+            compacted_row, row_omitted = self._compact_semantic_row(row)
+            compacted_semantic.append(compacted_row)
+            semantic_nested_omitted += sum(row_omitted.values())
+
+        public_results["pages"] = compacted_pages
+        pipeline["semantic_linking_map"] = compacted_semantic
         public_results["pipeline"] = pipeline
 
         artifacts = public_results.setdefault("artifacts", {})
-        artifacts["payload_compacted"] = any(v > 0 for v in omitted.values())
+        artifacts["payload_compacted"] = any(v > 0 for v in omitted.values()) or page_nested_omitted > 0 or semantic_nested_omitted > 0
         artifacts["inline_limits"] = {
             "issues": issues_limit,
             "semantic_linking_map": semantic_limit,
             "pages": pages_limit,
         }
         artifacts["omitted_counts"] = omitted
+        if page_nested_omitted > 0 or semantic_nested_omitted > 0:
+            nested = dict(artifacts.get("nested_omitted_counts") or {})
+            if page_nested_omitted > 0:
+                nested["pages"] = page_nested_omitted
+            if semantic_nested_omitted > 0:
+                nested["semantic_linking_map"] = semantic_nested_omitted
+            artifacts["nested_omitted_counts"] = nested
