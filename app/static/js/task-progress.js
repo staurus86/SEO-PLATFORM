@@ -434,6 +434,7 @@ function _formatHeartbeatAge(value) {
 function _formatTaskType(taskType) {
     const value = String(taskType || '').trim().toLowerCase();
     const labels = {
+        unified_audit: 'Full SEO Audit',
         robots_check: 'Robots.txt',
         sitemap_validate: 'Sitemap',
         bot_check: 'Bot Check',
@@ -690,6 +691,7 @@ function updateProgress(data) {
     if (finishAtEl) finishAtEl.textContent = executionStats.finishAt || '-';
 
     const isSitePro = (data.task_type === 'site_audit_pro');
+    const isUnifiedAudit = (data.task_type === 'unified_audit');
     const isCwvBatch = (data.task_type === 'core_web_vitals') && Number(progressMeta.total_pages || 0) > 1;
     const totalPages = Number(progressMeta.total_pages || 0);
     if (showLifecycleMeta) {
@@ -743,7 +745,7 @@ function updateProgress(data) {
         _toggleProgressMetaCard('progress-processed-card', false);
         _toggleProgressMetaCard('progress-total-card', false);
         _toggleProgressMetaCard('progress-queue-card', false);
-        _toggleProgressMetaCard('progress-current-url-card', isRedirectChecker);
+        _toggleProgressMetaCard('progress-current-url-card', isRedirectChecker || isUnifiedAudit);
         currentUrlEl.textContent = currentUrl;
         progressMetaWrap.classList.toggle('hidden', !showLifecycleMeta);
     }
@@ -8206,9 +8208,27 @@ function generateUnifiedAuditHTML(result) {
     // --- Per-tool detailed results ---
     const toolResults = r.results || r.tool_results || r.per_tool || {};
 
+    function _resolveUnifiedToolScore(toolKey, data, rd) {
+        if (toolKey === 'robots') return Number(rd.quality_score ?? data.quality_score ?? scores[toolKey] ?? 0);
+        if (toolKey === 'sitemap') return Number(rd.quality_score ?? data.quality_score ?? scores[toolKey] ?? 0);
+        if (toolKey === 'mobile') return Number(rd.score ?? rd.summary?.score ?? scores.mobile_friendly ?? 0);
+        if (toolKey === 'redirect') return Number(rd.summary?.quality_score ?? scores[toolKey] ?? 0);
+        if (toolKey === 'cwv') {
+            if (rd.combined) {
+                const mobilePerf = Number(rd.mobile?.summary?.performance_score ?? rd.mobile?.categories?.performance ?? 0);
+                const desktopPerf = Number(rd.desktop?.summary?.performance_score ?? rd.desktop?.categories?.performance ?? 0);
+                const parts = [mobilePerf, desktopPerf].filter(v => v > 0);
+                return parts.length ? Math.round(parts.reduce((a, b) => a + b, 0) / parts.length) : Number(scores.cwv_avg ?? 0);
+            }
+            return Number(rd.summary?.performance_score ?? rd.categories?.performance ?? scores.cwv_avg ?? 0);
+        }
+        return scores[toolKey];
+    }
+
     function _renderToolSummary(toolKey, toolName, data) {
         if (!data || typeof data !== 'object') return '';
-        const score = scores[toolKey];
+        const rd = data.results || data;
+        const score = _resolveUnifiedToolScore(toolKey, data, rd);
         const scoreColor = typeof score === 'number' ? _unifiedScoreColor(score) : 'var(--ds-text-muted)';
         const scoreDisplay = score !== undefined && score !== null ? score : '—';
 
@@ -8217,21 +8237,23 @@ function generateUnifiedAuditHTML(result) {
         let detailsHtml = '';
 
         // Extract results — may be nested under .results
-        const rd = data.results || data;
-
         if (toolKey === 'robots') {
             const found = rd.robots_txt_found ?? data.robots_txt_found;
-            const rulesCount = rd.total_rules ?? rd.findings?.total_rules ?? 0;
-            const sitemapsCount = rd.sitemaps_found ?? rd.findings?.total_sitemaps ?? 0;
+            const rulesCount = rd.total_rules ?? (Number(rd.disallow_rules || 0) + Number(rd.allow_rules || 0)) ?? rd.findings?.total_rules ?? 0;
+            const sitemapsCount = Array.isArray(rd.sitemaps) ? rd.sitemaps.length : (rd.sitemaps_found ?? rd.findings?.total_sitemaps ?? 0);
             metricsHtml = `
                 <div class="grid grid-cols-3 gap-3 mb-3">
                     <div class="text-center"><div class="text-xl font-bold" style="color:${found ? 'var(--ds-success)' : 'var(--ds-danger)'}">${found ? 'Найден' : 'Не найден'}</div><div class="text-xs" style="color:var(--ds-text-muted)">robots.txt</div></div>
                     <div class="text-center"><div class="text-xl font-bold" style="color:var(--ds-text)">${rulesCount}</div><div class="text-xs" style="color:var(--ds-text-muted)">Правила</div></div>
                     <div class="text-center"><div class="text-xl font-bold" style="color:var(--ds-text)">${sitemapsCount}</div><div class="text-xs" style="color:var(--ds-text-muted)">Sitemaps</div></div>
                 </div>`;
-            const recs = rd.recommendations || data.recommendations || [];
-            if (recs.length > 0) {
-                issuesHtml = `<ul class="text-sm space-y-1" style="color:var(--ds-text-secondary);">${recs.slice(0,5).map(rec => `<li>• ${escapeHtml(typeof rec === 'string' ? rec : rec.text || rec.title || JSON.stringify(rec))}</li>`).join('')}</ul>`;
+            const robotItems = [
+                ...(Array.isArray(rd.issues) ? rd.issues : []),
+                ...(Array.isArray(rd.warnings) ? rd.warnings : []),
+                ...(Array.isArray(rd.recommendations) ? rd.recommendations : []),
+            ].slice(0, 6);
+            if (robotItems.length > 0) {
+                issuesHtml = `<ul class="text-sm space-y-1" style="color:var(--ds-text-secondary);">${robotItems.map(rec => `<li>• ${escapeHtml(typeof rec === 'string' ? rec : rec.text || rec.title || rec.message || JSON.stringify(rec))}</li>`).join('')}</ul>`;
             }
         }
 
@@ -8376,11 +8398,11 @@ function generateUnifiedAuditHTML(result) {
         }
 
         else if (toolKey === 'cwv') {
-            const cwvData = data.combined ? (data.mobile || data) : data;
+            const cwvData = rd.combined ? (rd.mobile || rd) : rd;
             const perfScore = cwvData.categories_scores?.performance ?? 0;
             const lcpMs = cwvData.metrics?.lcp?.lab_value_ms ?? cwvData.metrics?.lcp?.field_value_ms;
-            const cls = cwvData.metrics?.cls?.lab_value_ms ?? cwvData.metrics?.cls?.field_value_ms;
-            const grade = cwvData.cwv_grade ?? '—';
+            const cls = cwvData.metrics?.cls?.lab_value ?? cwvData.metrics?.cls?.field_value;
+            const grade = cwvData.summary?.core_web_vitals_status ?? cwvData.cwv_grade ?? '—';
             metricsHtml = `
                 <div class="grid grid-cols-4 gap-3 mb-3">
                     <div class="text-center"><div class="text-xl font-bold" style="color:${_unifiedScoreColor(perfScore)}">${perfScore}</div><div class="text-xs" style="color:var(--ds-text-muted)">Performance</div></div>
