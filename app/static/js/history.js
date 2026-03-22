@@ -56,6 +56,7 @@ function clearHistory() {
 function getToolName(endpoint) {
     const names = {
         'site-analyze': 'Анализ сайта',
+        'unified-audit': 'Full SEO Audit',
         'onpage-audit': 'OnPage-аудит',
         'site-audit-pro': 'Site Audit Pro',
         'robots-check': 'Robots.txt',
@@ -75,6 +76,7 @@ function getToolName(endpoint) {
 function getToolIcon(endpoint) {
     const icons = {
         'site-analyze': 'fa-sitemap text-blue-500',
+        'unified-audit': 'fa-layer-group text-indigo-600',
         'onpage-audit': 'fa-file-alt text-blue-500',
         'site-audit-pro': 'fa-layer-group text-indigo-500',
         'robots-check': 'fa-robot text-green-500',
