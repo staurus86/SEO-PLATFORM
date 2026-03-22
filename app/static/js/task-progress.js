@@ -8026,6 +8026,13 @@ function generateUnifiedAuditHTML(result) {
     const url = result.url || r.url || '';
 
     const durationSec = (durationMs / 1000).toFixed(1);
+    const _firstFinite = (...values) => {
+        for (const value of values) {
+            const num = Number(value);
+            if (Number.isFinite(num)) return num;
+        }
+        return NaN;
+    };
 
     const robotsPayload = toolResults.robots?.results || toolResults.robots || {};
     if (toolResults.robots) {
@@ -8042,17 +8049,33 @@ function generateUnifiedAuditHTML(result) {
         const redirectScore = Number(redirectPayload.summary?.quality_score ?? NaN);
         if (Number.isFinite(redirectScore)) scores.redirect = redirectScore;
     }
-    const cwvPayload = toolResults.cwv?.results || toolResults.cwv || {};
-    if (toolResults.cwv) {
+    const cwvEntry = toolResults.cwv || toolResults.core_web_vitals || {};
+    const cwvPayload = cwvEntry?.results?.results || cwvEntry?.results || cwvEntry || {};
+    if (Object.keys(cwvEntry || {}).length > 0) {
         if (cwvPayload.combined) {
-            const mobilePerf = Number(cwvPayload.mobile?.summary?.performance_score ?? cwvPayload.mobile?.categories?.performance ?? NaN);
-            const desktopPerf = Number(cwvPayload.desktop?.summary?.performance_score ?? cwvPayload.desktop?.categories?.performance ?? NaN);
+            const mobilePerf = _firstFinite(
+                cwvPayload.mobile?.summary?.performance_score,
+                cwvPayload.mobile?.categories?.performance,
+                cwvPayload.summary_mobile?.performance_score,
+                cwvPayload.mobile_score
+            );
+            const desktopPerf = _firstFinite(
+                cwvPayload.desktop?.summary?.performance_score,
+                cwvPayload.desktop?.categories?.performance,
+                cwvPayload.summary_desktop?.performance_score,
+                cwvPayload.desktop_score
+            );
             if (Number.isFinite(mobilePerf)) scores.cwv_mobile = mobilePerf;
             if (Number.isFinite(desktopPerf)) scores.cwv_desktop = desktopPerf;
             const avgParts = [scores.cwv_mobile, scores.cwv_desktop].filter(v => Number.isFinite(Number(v)));
             if (avgParts.length > 0) scores.cwv_avg = Math.round((avgParts.reduce((a, b) => Number(a) + Number(b), 0) / avgParts.length) * 10) / 10;
         } else {
-            const perf = Number(cwvPayload.summary?.performance_score ?? cwvPayload.categories?.performance ?? NaN);
+            const perf = _firstFinite(
+                cwvPayload.summary?.performance_score,
+                cwvPayload.categories?.performance,
+                cwvPayload.performance_score,
+                cwvPayload.score
+            );
             if (Number.isFinite(perf)) scores.cwv_avg = perf;
         }
     }
@@ -8114,7 +8137,8 @@ function generateUnifiedAuditHTML(result) {
         cwv_avg: 'CWV Average',
         robots_ok: 'Robots.txt'
     };
-    const scoreKeys = Object.keys(scores);
+    const scoreKeys = ['onpage', 'render', 'mobile_friendly', 'bot_accessibility', 'redirect', 'cwv_mobile', 'cwv_desktop', 'cwv_avg', 'robots_ok']
+        .filter(k => scores[k] !== undefined && scores[k] !== null);
     const scoresGridHtml = scoreKeys.length > 0 ? `
     <div class="ds-card" style="padding:1.25rem;">
         <h4 class="font-semibold mb-3" style="color:var(--ds-text);">Оценки по модулям</h4>
@@ -8245,12 +8269,28 @@ function generateUnifiedAuditHTML(result) {
         if (toolKey === 'redirect') return Number(rd.summary?.quality_score ?? scores[toolKey] ?? 0);
         if (toolKey === 'cwv') {
             if (rd.combined) {
-                const mobilePerf = Number(rd.mobile?.summary?.performance_score ?? rd.mobile?.categories?.performance ?? 0);
-                const desktopPerf = Number(rd.desktop?.summary?.performance_score ?? rd.desktop?.categories?.performance ?? 0);
+                const mobilePerf = _firstFinite(
+                    rd.mobile?.summary?.performance_score,
+                    rd.mobile?.categories?.performance,
+                    rd.summary_mobile?.performance_score,
+                    rd.mobile_score
+                );
+                const desktopPerf = _firstFinite(
+                    rd.desktop?.summary?.performance_score,
+                    rd.desktop?.categories?.performance,
+                    rd.summary_desktop?.performance_score,
+                    rd.desktop_score
+                );
                 const parts = [mobilePerf, desktopPerf].filter(v => v > 0);
                 return parts.length ? Math.round(parts.reduce((a, b) => a + b, 0) / parts.length) : Number(scores.cwv_avg ?? 0);
             }
-            return Number(rd.summary?.performance_score ?? rd.categories?.performance ?? scores.cwv_avg ?? 0);
+            return _firstFinite(
+                rd.summary?.performance_score,
+                rd.categories?.performance,
+                rd.performance_score,
+                rd.score,
+                scores.cwv_avg ?? 0
+            );
         }
         return scores[toolKey];
     }
@@ -8293,11 +8333,12 @@ function generateUnifiedAuditHTML(result) {
             const sitemapValid = rd.valid ?? rd.summary?.valid;
             const sitemapGrade = rd.quality_grade ?? rd.summary?.quality_grade ?? '';
             const status = sitemapValid === true ? 'valid' : sitemapValid === false ? 'invalid' : (sitemapGrade || 'unknown');
+            const statusLabel = status === 'valid' ? 'Валидна' : status === 'invalid' ? 'Невалидна' : status === 'unknown' ? 'Неизвестно' : status;
             metricsHtml = `
                 <div class="grid grid-cols-3 gap-3 mb-3">
                     <div class="text-center"><div class="text-xl font-bold" style="color:var(--ds-text)">${Number(totalUrls).toLocaleString()}</div><div class="text-xs" style="color:var(--ds-text-muted)">URL в sitemap</div></div>
                     <div class="text-center"><div class="text-xl font-bold" style="color:var(--ds-text)">${filesCount}</div><div class="text-xs" style="color:var(--ds-text-muted)">Файлов</div></div>
-                    <div class="text-center"><div class="text-xl font-bold" style="color:${status === 'valid' ? 'var(--ds-success)' : status === 'invalid' ? 'var(--ds-danger)' : 'var(--ds-warning)'}">${status}</div><div class="text-xs" style="color:var(--ds-text-muted)">Статус</div></div>
+                    <div class="text-center"><div class="text-xl font-bold" style="color:${status === 'valid' ? 'var(--ds-success)' : status === 'invalid' ? 'var(--ds-danger)' : 'var(--ds-warning)'}">${statusLabel}</div><div class="text-xs" style="color:var(--ds-text-muted)">Статус</div></div>
                 </div>`;
             const sitemapMessages = [
                 ...(Array.isArray(rd.errors) ? rd.errors : []),
