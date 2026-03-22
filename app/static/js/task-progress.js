@@ -8026,6 +8026,36 @@ function generateUnifiedAuditHTML(result) {
 
     const durationSec = (durationMs / 1000).toFixed(1);
 
+    const robotsPayload = toolResults.robots?.results || toolResults.robots || {};
+    if (toolResults.robots) {
+        const robotsQuality = Number(robotsPayload.quality_score ?? NaN);
+        scores.robots_ok = Number.isFinite(robotsQuality) ? robotsQuality : (robotsPayload.robots_txt_found ? 100 : 0);
+    }
+    const mobilePayload = toolResults.mobile?.results || toolResults.mobile || {};
+    if (toolResults.mobile) {
+        const mobileScore = Number(mobilePayload.score ?? mobilePayload.summary?.score ?? NaN);
+        if (Number.isFinite(mobileScore)) scores.mobile_friendly = mobileScore;
+    }
+    const redirectPayload = toolResults.redirect?.results || toolResults.redirect || {};
+    if (toolResults.redirect) {
+        const redirectScore = Number(redirectPayload.summary?.quality_score ?? NaN);
+        if (Number.isFinite(redirectScore)) scores.redirect = redirectScore;
+    }
+    const cwvPayload = toolResults.cwv?.results || toolResults.cwv || {};
+    if (toolResults.cwv) {
+        if (cwvPayload.combined) {
+            const mobilePerf = Number(cwvPayload.mobile?.summary?.performance_score ?? cwvPayload.mobile?.categories?.performance ?? NaN);
+            const desktopPerf = Number(cwvPayload.desktop?.summary?.performance_score ?? cwvPayload.desktop?.categories?.performance ?? NaN);
+            if (Number.isFinite(mobilePerf)) scores.cwv_mobile = mobilePerf;
+            if (Number.isFinite(desktopPerf)) scores.cwv_desktop = desktopPerf;
+            const avgParts = [scores.cwv_mobile, scores.cwv_desktop].filter(v => Number.isFinite(Number(v)));
+            if (avgParts.length > 0) scores.cwv_avg = Math.round((avgParts.reduce((a, b) => Number(a) + Number(b), 0) / avgParts.length) * 10) / 10;
+        } else {
+            const perf = Number(cwvPayload.summary?.performance_score ?? cwvPayload.categories?.performance ?? NaN);
+            if (Number.isFinite(perf)) scores.cwv_avg = perf;
+        }
+    }
+
     // --- Header with overall score ring ---
     const headerHtml = buildToolHeader({
         gradient: 'from-indigo-600 to-blue-700',
@@ -8206,7 +8236,6 @@ function generateUnifiedAuditHTML(result) {
     }
 
     // --- Per-tool detailed results ---
-    const toolResults = r.results || r.tool_results || r.per_tool || {};
 
     function _resolveUnifiedToolScore(toolKey, data, rd) {
         if (toolKey === 'robots') return Number(rd.quality_score ?? data.quality_score ?? scores[toolKey] ?? 0);
@@ -8269,6 +8298,14 @@ function generateUnifiedAuditHTML(result) {
                     <div class="text-center"><div class="text-xl font-bold" style="color:var(--ds-text)">${filesCount}</div><div class="text-xs" style="color:var(--ds-text-muted)">Файлов</div></div>
                     <div class="text-center"><div class="text-xl font-bold" style="color:${status === 'valid' ? 'var(--ds-success)' : status === 'invalid' ? 'var(--ds-danger)' : 'var(--ds-warning)'}">${status}</div><div class="text-xs" style="color:var(--ds-text-muted)">Статус</div></div>
                 </div>`;
+            const sitemapMessages = [
+                ...(Array.isArray(rd.errors) ? rd.errors : []),
+                ...(Array.isArray(rd.warnings) ? rd.warnings : []),
+                ...(sitemapValid ? ((Array.isArray(rd.highlights) ? rd.highlights : []).slice(0, 3)) : []),
+            ].slice(0, 6);
+            if (sitemapMessages.length > 0) {
+                issuesHtml = `<ul class="text-sm space-y-1" style="color:var(--ds-text-secondary);">${sitemapMessages.map(item => `<li>• ${escapeHtml(typeof item === 'string' ? item : item.text || item.title || item.message || JSON.stringify(item))}</li>`).join('')}</ul>`;
+            }
         }
 
         else if (toolKey === 'onpage') {
@@ -8399,7 +8436,7 @@ function generateUnifiedAuditHTML(result) {
 
         else if (toolKey === 'cwv') {
             const cwvData = rd.combined ? (rd.mobile || rd) : rd;
-            const perfScore = cwvData.categories_scores?.performance ?? 0;
+            const perfScore = cwvData.summary?.performance_score ?? cwvData.categories?.performance ?? cwvData.categories_scores?.performance ?? 0;
             const lcpMs = cwvData.metrics?.lcp?.lab_value_ms ?? cwvData.metrics?.lcp?.field_value_ms;
             const cls = cwvData.metrics?.cls?.lab_value ?? cwvData.metrics?.cls?.field_value;
             const grade = cwvData.summary?.core_web_vitals_status ?? cwvData.cwv_grade ?? '—';
