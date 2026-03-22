@@ -8018,7 +8018,8 @@ function generateUnifiedAuditHTML(result) {
     const durationMs = Number(r.duration_ms ?? 0);
     const toolsRun = Number(r.tools_run ?? 0);
     const toolsFailed = Number(r.tools_failed ?? 0);
-    const scores = r.scores || {};
+    const toolResults = r.results || r.tool_results || r.per_tool || {};
+    const scores = { ...(r.scores || {}) };
     const devTasks = Array.isArray(r.dev_tasks) ? r.dev_tasks : [];
     const errors = r.errors || {};
     const tid = result.task_id || taskId || '';
