@@ -1,10 +1,10 @@
 import os
-import shutil
 import socket
 import subprocess
 import sys
 import time
 import unittest
+import json
 from pathlib import Path
 
 import requests
@@ -152,7 +152,20 @@ class BrowserCriticalFlowsTests(unittest.TestCase):
         )
         context.route(
             f"{self.base_url}/api/tasks/{task_id}",
-            lambda route: route.fulfill(status=200, content_type="application/json", body=__import__("json").dumps(unified_result)),
+            lambda route: route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps(
+                    {
+                        "task_id": task_id,
+                        "status": "SUCCESS",
+                        "task_type": "unified_audit",
+                        "progress": 100,
+                        "status_message": "Done",
+                        "result": unified_result,
+                    }
+                ),
+            ),
         )
 
         page = context.new_page()
@@ -193,7 +206,20 @@ class BrowserCriticalFlowsTests(unittest.TestCase):
         )
         context.route(
             f"{self.base_url}/api/tasks/{task_id}",
-            lambda route: route.fulfill(status=200, content_type="application/json", body=__import__("json").dumps(batch_result)),
+            lambda route: route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps(
+                    {
+                        "task_id": task_id,
+                        "status": "SUCCESS",
+                        "task_type": "batch_onpage",
+                        "progress": 100,
+                        "status_message": "Done",
+                        "result": batch_result,
+                    }
+                ),
+            ),
         )
 
         page = context.new_page()
@@ -242,7 +268,20 @@ class BrowserCriticalFlowsTests(unittest.TestCase):
         )
         context.route(
             f"{self.base_url}/api/tasks/{task_id}",
-            lambda route: route.fulfill(status=200, content_type="application/json", body=__import__("json").dumps(sitepro_result)),
+            lambda route: route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps(
+                    {
+                        "task_id": task_id,
+                        "status": "SUCCESS",
+                        "task_type": "site_audit_pro",
+                        "progress": 100,
+                        "status_message": "Done",
+                        "result": sitepro_result,
+                    }
+                ),
+            ),
         )
 
         page = context.new_page()

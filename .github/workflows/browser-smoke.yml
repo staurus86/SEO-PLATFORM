@@ -1,0 +1,41 @@
+name: Browser Smoke
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Install Playwright Chromium
+        run: python -m playwright install --with-deps chromium
+
+      - name: Run critical regression suite
+        env:
+          PYTHONPATH: .
+        run: |
+          python -m pytest \
+            tests/test_browser_critical_flows.py \
+            tests/test_unified_ui_and_exports_regressions.py \
+            tests/test_smoke_existing_tools.py \
+            tests/test_llm_crawler_feature_gate.py \
+            -q
