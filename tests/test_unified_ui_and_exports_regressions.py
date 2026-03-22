@@ -8,6 +8,7 @@ class UnifiedUiGuards(unittest.TestCase):
     def test_task_progress_has_unified_type_and_localized_status_labels(self):
         root = Path(__file__).resolve().parents[1]
         main_js = (root / "app" / "static" / "js" / "task-progress.js").read_text(encoding="utf-8")
+        runtime_js = (root / "app" / "static" / "js" / "task-progress-runtime.js").read_text(encoding="utf-8")
         batch_js = (root / "app" / "static" / "js" / "task-progress-batch.js").read_text(encoding="utf-8")
         unified_js = (root / "app" / "static" / "js" / "task-progress-unified.js").read_text(encoding="utf-8")
         template = (root / "app" / "templates" / "task_progress.html").read_text(encoding="utf-8")
@@ -18,12 +19,16 @@ class UnifiedUiGuards(unittest.TestCase):
         self.assertIn("RUNNING: 'В работе'", main_js)
         self.assertIn("SUCCESS: 'Готово'", main_js)
         self.assertIn("FAILURE: 'Ошибка'", main_js)
+        self.assertIn("function connectTaskWebSocket(tid, onMessage, hooks = {})", runtime_js)
+        self.assertIn("function filenameFromResponse(response, fallbackPrefix, extension, sourceUrl = '')", runtime_js)
+        self.assertIn("function saveBotTrendSnapshot(result)", runtime_js)
         self.assertIn("function _batchRenderSuccessDetails(item, toolType)", batch_js)
         self.assertIn("if (t.includes('robots')) {", batch_js)
         self.assertIn("title: `Batch ${_batchFriendlyToolLabel(toolType)}`", batch_js)
         self.assertIn("function generateUnifiedAuditHTML(result)", unified_js)
         self.assertIn("const cwvEntry = toolResults.cwv || toolResults.core_web_vitals || {}", unified_js)
         self.assertIn("function downloadUnifiedAuditExport(format)", unified_js)
+        self.assertIn('/static/js/task-progress-runtime.js?v={{ app_version }}-{{ task_id }}', template)
         self.assertIn('/static/js/task-progress-batch.js?v={{ app_version }}-{{ task_id }}', template)
         self.assertIn('/static/js/task-progress-unified.js?v={{ app_version }}-{{ task_id }}', template)
 
