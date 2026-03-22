@@ -8,6 +8,7 @@ import threading
 import time
 from datetime import datetime, timezone
 from typing import Optional, Dict, Any
+from copy import deepcopy
 
 from app.core.memory_guard import mark_activity, register_cleanup_callback
 
@@ -24,6 +25,76 @@ _task_lock = threading.RLock()
 _last_memory_prune_ts = 0.0
 
 _TERMINAL_STATUSES = {"SUCCESS", "FAILURE"}
+_HEAVY_DEBUG_KEYS = {
+    "raw_html",
+    "rendered_html",
+    "page_source",
+    "dom_html",
+    "full_html",
+    "network_log",
+    "raw_response",
+    "response_body",
+    "html_body",
+}
+
+
+def _compact_console_log(value: Dict[str, Any], removed: list[str], path: str) -> Dict[str, Any]:
+    compacted = dict(value)
+    for key in ("errors", "warnings"):
+        items = compacted.get(key)
+        if isinstance(items, list) and len(items) > 5:
+            omitted = len(items) - 5
+            compacted[key] = items[:5]
+            compacted[f"{key}_omitted"] = omitted
+            removed.append(f"{path}.{key}[{omitted}]")
+    return compacted
+
+
+def _compact_heavy_value(value: Any, removed: list[str], path: str = "") -> Any:
+    if isinstance(value, dict):
+        compacted: Dict[str, Any] = {}
+        for key, item in value.items():
+            child_path = f"{path}.{key}" if path else str(key)
+            if key in _HEAVY_DEBUG_KEYS:
+                removed.append(child_path)
+                continue
+            if key == "console_log" and isinstance(item, dict):
+                compacted[key] = _compact_console_log(item, removed, child_path)
+                continue
+            compacted[key] = _compact_heavy_value(item, removed, child_path)
+        return compacted
+    if isinstance(value, list):
+        return [_compact_heavy_value(item, removed, f"{path}[{idx}]") for idx, item in enumerate(value)]
+    return value
+
+
+def _compact_task_payload(task_id: str, data: Dict[str, Any]) -> Dict[str, Any]:
+    from app.config import settings
+
+    original_size = _estimate_payload_size_bytes(data)
+    threshold = max(32 * 1024, int(getattr(settings, "TASK_STORE_COMPACT_THRESHOLD_BYTES", 768 * 1024) or (768 * 1024)))
+    if original_size <= threshold:
+        return data
+
+    removed: list[str] = []
+    compacted = _compact_heavy_value(deepcopy(data), removed)
+    if not removed:
+        return data
+
+    compacted_size = _estimate_payload_size_bytes(compacted)
+    storage_meta = dict(compacted.get("storage_meta") or {})
+    storage_meta.update(
+        {
+            "payload_compacted": True,
+            "original_bytes": original_size,
+            "stored_bytes": compacted_size,
+            "removed_fields": removed[:50],
+            "removed_fields_count": len(removed),
+        }
+    )
+    compacted["storage_meta"] = storage_meta
+    print(f"[API] Compacted task payload {task_id}: {original_size} -> {compacted_size} bytes; removed {len(removed)} fields")
+    return compacted
 
 
 def _utc_now_iso() -> str:
@@ -214,6 +285,7 @@ def _save_task_payload(task_id: str, data: Dict[str, Any]) -> None:
     """Persist task payload in Redis (24h TTL) or memory fallback."""
     mark_activity("task_store:save")
     _maybe_prune_memory()
+    data = _compact_task_payload(task_id, data)
 
     redis_client = get_redis_client()
     if redis_client:

@@ -6,10 +6,22 @@ import logging
 import threading
 import time
 from typing import Optional, Dict, Any
+from copy import deepcopy
 from app.config import settings
 from app.core.memory_guard import mark_activity, register_cleanup_callback
 
 logger = logging.getLogger(__name__)
+_HEAVY_PROGRESS_KEYS = {
+    "raw_html",
+    "rendered_html",
+    "page_source",
+    "dom_html",
+    "full_html",
+    "network_log",
+    "raw_response",
+    "response_body",
+    "html_body",
+}
 
 
 class ProgressTracker:
@@ -55,6 +67,48 @@ class ProgressTracker:
         self._redis_client = None
         self._redis_next_retry_ts = time.time() + cooldown
         logger.warning("Progress tracker Redis error (%s): %s. Retry in %ss", where, exc, cooldown)
+
+    def _estimate_bytes(self, payload: Dict[str, Any]) -> int:
+        try:
+            return len(json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8"))
+        except Exception:
+            return 0
+
+    def _compact_extra(self, extra: Dict[str, Any]) -> Dict[str, Any]:
+        threshold = max(8 * 1024, int(getattr(settings, "PROGRESS_COMPACT_THRESHOLD_BYTES", 128 * 1024) or (128 * 1024)))
+        original = {"extra": extra}
+        original_size = self._estimate_bytes(original)
+        if original_size <= threshold:
+            return extra
+
+        removed: list[str] = []
+
+        def _walk(value: Any, path: str = "") -> Any:
+            if isinstance(value, dict):
+                compacted: Dict[str, Any] = {}
+                for key, item in value.items():
+                    child_path = f"{path}.{key}" if path else str(key)
+                    if key in _HEAVY_PROGRESS_KEYS:
+                        removed.append(child_path)
+                        continue
+                    compacted[key] = _walk(item, child_path)
+                return compacted
+            if isinstance(value, list):
+                return [_walk(item, f"{path}[{idx}]") for idx, item in enumerate(value)]
+            return value
+
+        compacted = _walk(deepcopy(extra))
+        compacted_size = self._estimate_bytes({"extra": compacted})
+        if removed:
+            compacted["_storage_meta"] = {
+                "payload_compacted": True,
+                "original_bytes": original_size,
+                "stored_bytes": compacted_size,
+                "removed_fields": removed[:20],
+                "removed_fields_count": len(removed),
+            }
+            logger.info("Progress payload compacted: %s -> %s bytes; removed=%s", original_size, compacted_size, len(removed))
+        return compacted
 
     def cleanup_memory(self, idle_seconds: float = 0.0, aggressive: bool = False) -> Dict[str, Any]:
         ttl_sec = max(60, int(getattr(settings, "PROGRESS_MEMORY_TTL_SEC", self.ttl) or self.ttl))
@@ -145,7 +199,7 @@ class ProgressTracker:
             "total": total,
             "percentage": round((current / total * 100), 2) if total > 0 else 0,
             "message": message,
-            "extra": extra or {}
+            "extra": self._compact_extra(extra or {})
         }
         mark_activity("progress:update")
         
@@ -163,7 +217,7 @@ class ProgressTracker:
             self._memory_store[task_id] = data
             self._memory_updated_at[task_id] = now
             self._memory_last_access_at[task_id] = now
-            self._memory_payload_size_bytes[task_id] = len(json.dumps(data, ensure_ascii=False, default=str).encode("utf-8"))
+            self._memory_payload_size_bytes[task_id] = self._estimate_bytes(data)
         self.cleanup_memory(idle_seconds=0.0, aggressive=False)
     
     def get_progress(self, task_id: str) -> Optional[Dict[str, Any]]:

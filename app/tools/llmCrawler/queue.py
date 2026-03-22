@@ -136,6 +136,36 @@ def _truncate_heavy_fields(job: Dict[str, Any]) -> Dict[str, Any]:
             snap.pop("raw_html", None)
         if not bool((result.get("options") or {}).get("include_rendered_html", False)):
             snap.pop("rendered_html", None)
+    for key, limit in (
+        ("content_segments", 20),
+        ("segment_tree", 30),
+        ("main_content_nodes", 40),
+        ("noise_nodes", 60),
+        ("chunk_ranking_debug", 20),
+    ):
+        items = result.get(key)
+        if isinstance(items, list) and len(items) > limit:
+            result[key] = items[:limit]
+            result.setdefault("storage_meta", {})[f"{key}_omitted"] = len(items) - limit
+    segmentation = result.get("segmentation")
+    if isinstance(segmentation, dict):
+        for key, limit in (
+            ("content_segments", 20),
+            ("segment_tree", 30),
+            ("main_content_nodes", 40),
+            ("noise_nodes", 60),
+        ):
+            items = segmentation.get(key)
+            if isinstance(items, list) and len(items) > limit:
+                segmentation[key] = items[:limit]
+                result.setdefault("storage_meta", {})[f"segmentation_{key}_omitted"] = len(items) - limit
+    recommendation_diagnostics = result.get("recommendation_diagnostics")
+    if isinstance(recommendation_diagnostics, dict):
+        for key, limit in (("strengths", 10), ("warnings", 10), ("actions", 10)):
+            items = recommendation_diagnostics.get(key)
+            if isinstance(items, list) and len(items) > limit:
+                recommendation_diagnostics[key] = items[:limit]
+                result.setdefault("storage_meta", {})[f"recommendation_diagnostics_{key}_omitted"] = len(items) - limit
     job["result"] = result
     return job
 

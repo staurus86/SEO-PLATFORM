@@ -166,9 +166,11 @@ class Settings(BaseSettings):
     TASK_STORE_MEMORY_MAX_ITEMS: int = int(os.getenv("TASK_STORE_MEMORY_MAX_ITEMS", "200"))
     TASK_STORE_MEMORY_MAX_BYTES: int = int(os.getenv("TASK_STORE_MEMORY_MAX_BYTES", str(64 * 1024 * 1024)))
     TASK_STORE_IDLE_KEEP_SEC: int = int(os.getenv("TASK_STORE_IDLE_KEEP_SEC", "900"))
+    TASK_STORE_COMPACT_THRESHOLD_BYTES: int = int(os.getenv("TASK_STORE_COMPACT_THRESHOLD_BYTES", str(768 * 1024)))
     PROGRESS_MEMORY_TTL_SEC: int = int(os.getenv("PROGRESS_MEMORY_TTL_SEC", "7200"))
     PROGRESS_MEMORY_MAX_ITEMS: int = int(os.getenv("PROGRESS_MEMORY_MAX_ITEMS", "2000"))
     PROGRESS_MEMORY_MAX_BYTES: int = int(os.getenv("PROGRESS_MEMORY_MAX_BYTES", str(8 * 1024 * 1024)))
     PROGRESS_IDLE_KEEP_SEC: int = int(os.getenv("PROGRESS_IDLE_KEEP_SEC", "900"))
+    PROGRESS_COMPACT_THRESHOLD_BYTES: int = int(os.getenv("PROGRESS_COMPACT_THRESHOLD_BYTES", str(128 * 1024)))
     
 settings = Settings()
