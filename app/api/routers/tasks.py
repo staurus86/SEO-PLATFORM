@@ -14,7 +14,12 @@ from app.api.routers._task_store import (
     get_task_result,
     get_task_store_memory_stats,
     cleanup_task_results_memory,
+    get_redis_client as get_task_store_redis,
 )
+from app.config import settings
+from app.core.memory_guard import get_process_memory_snapshot, get_memory_guard_status
+from app.core.progress import progress_tracker
+from app.tools.llmCrawler.queue import get_worker_heartbeat, queue_depth
 
 router = APIRouter(tags=["Tasks"])
 
@@ -226,8 +231,6 @@ async def celery_status():
 @router.get("/memory/status")
 async def task_memory_status():
     """Inspect in-process memory usage and fallback stores."""
-    from app.core.memory_guard import get_process_memory_snapshot, get_memory_guard_status
-    from app.core.progress import progress_tracker
 
     return {
         "status": "SUCCESS",
@@ -235,6 +238,58 @@ async def task_memory_status():
         "memory_guard": get_memory_guard_status(),
         "task_store": get_task_store_memory_stats(),
         "progress_store": progress_tracker.get_memory_stats(),
+    }
+
+
+@router.get("/ops/status")
+async def ops_status():
+    """Operational status summary for Redis, workers, queues, and fallback stores."""
+    redis_ok = False
+    redis_error = None
+    try:
+        redis_ok = bool(get_task_store_redis())
+    except Exception as exc:
+        redis_error = str(exc)
+
+    heartbeat = None
+    heartbeat_age_sec = None
+    worker_healthy = False
+    worker_error = None
+    queue_size = None
+
+    try:
+        heartbeat = get_worker_heartbeat()
+        queue_size = queue_depth()
+        if heartbeat and heartbeat.get("updatedAt"):
+            from datetime import datetime, timezone
+
+            ts = datetime.fromisoformat(str(heartbeat["updatedAt"]).replace("Z", "+00:00"))
+            heartbeat_age_sec = int((datetime.now(timezone.utc) - ts).total_seconds())
+            worker_healthy = heartbeat_age_sec <= max(
+                60, int(getattr(settings, "LLM_CRAWLER_WORKER_HEARTBEAT_TTL_SEC", 120) or 120) * 2
+            )
+    except Exception as exc:
+        worker_error = str(exc)
+
+    return {
+        "status": "healthy" if redis_ok else "degraded",
+        "redis": {
+            "ok": redis_ok,
+            "error": redis_error,
+        },
+        "llm_worker": {
+            "healthy": worker_healthy,
+            "heartbeat": heartbeat,
+            "heartbeat_age_sec": heartbeat_age_sec,
+            "queue_depth": queue_size,
+            "error": worker_error,
+        },
+        "memory": {
+            "process": get_process_memory_snapshot(),
+            "guard": get_memory_guard_status(),
+            "task_store": get_task_store_memory_stats(),
+            "progress_store": progress_tracker.get_memory_stats(),
+        },
     }
 
 
