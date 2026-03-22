@@ -52,7 +52,7 @@ def _get_redis():
 
         from app.config import settings
 
-        _redis_client = _redis_lib.from_url(settings.REDIS_URL, decode_responses=True)
+        _redis_client = _redis_lib.from_url(settings.RATE_LIMIT_REDIS_URL, decode_responses=True)
         _redis_client.ping()  # type: ignore[attr-defined]
         _redis_retry_after_ts = 0.0
     except Exception:
@@ -80,7 +80,10 @@ def _check_rate_limit(ip: str, limit: int, window_sec: int, bucket: str = "api")
         return True, limit, window_sec
 
     window_id = math.floor(time.time() / window_sec)
-    key = f"ratelimit:{bucket}:{ip}:{window_id}"
+    from app.config import settings
+
+    prefix = str(getattr(settings, "RATE_LIMIT_REDIS_PREFIX", "ratelimit") or "ratelimit").strip(": ")
+    key = f"{prefix}:{bucket}:{ip}:{window_id}"
     try:
         count = int(client.incr(key))  # type: ignore[attr-defined]
         if count == 1:

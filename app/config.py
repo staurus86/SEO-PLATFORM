@@ -29,6 +29,14 @@ class Settings(BaseSettings):
     # Redis
     REDIS_URL: str = os.getenv("REDIS_URL", "redis://localhost:6379/0")
     REDIS_RETRY_COOLDOWN_SEC: int = int(os.getenv("REDIS_RETRY_COOLDOWN_SEC", "30"))
+    TASK_STORE_REDIS_URL: str = os.getenv("TASK_STORE_REDIS_URL") or os.getenv("REDIS_URL", "redis://localhost:6379/0")
+    PROGRESS_REDIS_URL: str = os.getenv("PROGRESS_REDIS_URL") or os.getenv("REDIS_URL", "redis://localhost:6379/0")
+    RATE_LIMIT_REDIS_URL: str = os.getenv("RATE_LIMIT_REDIS_URL") or os.getenv("REDIS_URL", "redis://localhost:6379/0")
+    LLM_CRAWLER_REDIS_URL: str = os.getenv("LLM_CRAWLER_REDIS_URL") or os.getenv("REDIS_URL", "redis://localhost:6379/0")
+    TASK_STORE_REDIS_PREFIX: str = os.getenv("TASK_STORE_REDIS_PREFIX", "task")
+    PROGRESS_REDIS_PREFIX: str = os.getenv("PROGRESS_REDIS_PREFIX", "task_progress")
+    RATE_LIMIT_REDIS_PREFIX: str = os.getenv("RATE_LIMIT_REDIS_PREFIX", "ratelimit")
+    LLM_CRAWLER_REDIS_PREFIX: str = os.getenv("LLM_CRAWLER_REDIS_PREFIX", "llmCrawler")
     
     # Celery - use REDIS_URL from environment
     CELERY_BROKER_URL: str = os.getenv("CELERY_BROKER_URL") or os.getenv("REDIS_URL", "redis://localhost:6379/0")
@@ -86,8 +94,8 @@ class Settings(BaseSettings):
     LLM_CRAWLER_JOB_TTL_SEC: int = int(os.getenv("LLM_CRAWLER_JOB_TTL_SEC", str(72 * 3600)))
     LLM_CRAWLER_RATE_LIMIT_PER_MINUTE: int = int(os.getenv("LLM_CRAWLER_RATE_LIMIT_PER_MINUTE", "999"))
     LLM_CRAWLER_RENDER_RATE_LIMIT_PER_DAY: int = int(os.getenv("LLM_CRAWLER_RENDER_RATE_LIMIT_PER_DAY", "999"))
-    LLM_CRAWLER_QUEUE_KEY: str = os.getenv("LLM_CRAWLER_QUEUE_KEY", "llmCrawler:queue")
-    LLM_CRAWLER_WORKER_HEARTBEAT_KEY: str = os.getenv("LLM_CRAWLER_WORKER_HEARTBEAT_KEY", "llmCrawler:worker:heartbeat")
+    LLM_CRAWLER_QUEUE_KEY: str = os.getenv("LLM_CRAWLER_QUEUE_KEY", "")
+    LLM_CRAWLER_WORKER_HEARTBEAT_KEY: str = os.getenv("LLM_CRAWLER_WORKER_HEARTBEAT_KEY", "")
     LLM_CRAWLER_WORKER_HEARTBEAT_TTL_SEC: int = int(os.getenv("LLM_CRAWLER_WORKER_HEARTBEAT_TTL_SEC", "120"))
     LLM_CRAWLER_REQUIRE_HEALTHY_WORKER: bool = env_bool("LLM_CRAWLER_REQUIRE_HEALTHY_WORKER", "true")
     LLM_CRAWLER_STUCK_JOB_TIMEOUT_SEC: int = int(os.getenv("LLM_CRAWLER_STUCK_JOB_TIMEOUT_SEC", "300"))

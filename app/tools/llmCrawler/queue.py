@@ -43,7 +43,7 @@ def get_redis_client() -> Optional[Any]:
     if now_ts < _redis_retry_after_ts:
         return None
     try:
-        _redis_client = redis.from_url(settings.REDIS_URL, decode_responses=True)
+        _redis_client = redis.from_url(settings.LLM_CRAWLER_REDIS_URL, decode_responses=True)
         _redis_client.ping()
         _redis_retry_after_ts = 0.0
     except Exception:
@@ -52,12 +52,19 @@ def get_redis_client() -> Optional[Any]:
     return _redis_client
 
 
+def _llm_prefix() -> str:
+    return str(getattr(settings, "LLM_CRAWLER_REDIS_PREFIX", "llmCrawler") or "llmCrawler").strip(": ")
+
+
 def queue_key() -> str:
-    return str(getattr(settings, "LLM_CRAWLER_QUEUE_KEY", "llmCrawler:queue") or "llmCrawler:queue")
+    explicit = str(getattr(settings, "LLM_CRAWLER_QUEUE_KEY", "") or "").strip()
+    if explicit:
+        return explicit
+    return f"{_llm_prefix()}:queue"
 
 
 def job_key(job_id: str) -> str:
-    return f"llmCrawler:job:{job_id}"
+    return f"{_llm_prefix()}:job:{job_id}"
 
 
 def _job_ttl() -> int:
@@ -272,7 +279,7 @@ def inc_subject(subject: str) -> int:
     client = get_redis_client()
     if not client:
         return 0
-    key = f"llmCrawler:concurrent:{subject}"
+    key = f"{_llm_prefix()}:concurrent:{subject}"
     try:
         val = client.incr(key)
         client.expire(key, 600)
@@ -285,7 +292,7 @@ def dec_subject(subject: str) -> None:
     client = get_redis_client()
     if not client:
         return
-    key = f"llmCrawler:concurrent:{subject}"
+    key = f"{_llm_prefix()}:concurrent:{subject}"
     try:
         client.decr(key)
         client.expire(key, 600)
@@ -299,7 +306,7 @@ def check_rate_limit(subject: str, bucket: str, limit: int, window_sec: int) -> 
         return {"allowed": True, "remaining": limit, "reset_in": window_sec}
     safe_limit = max(1, int(limit))
     safe_window = max(1, int(window_sec))
-    key = f"llmCrawler:rate:{bucket}:{subject}"
+    key = f"{_llm_prefix()}:rate:{bucket}:{subject}"
     try:
         current = int(client.incr(key))
         if current == 1:
@@ -323,14 +330,8 @@ def set_worker_heartbeat(extra: Optional[Dict[str, Any]] = None) -> None:
         payload.update(extra)
     ttl = max(30, int(getattr(settings, "LLM_CRAWLER_WORKER_HEARTBEAT_TTL_SEC", 120) or 120))
     try:
-        key = str(
-            getattr(
-                settings,
-                "LLM_CRAWLER_WORKER_HEARTBEAT_KEY",
-                "llmCrawler:worker:heartbeat",
-            )
-            or "llmCrawler:worker:heartbeat"
-        )
+        explicit = str(getattr(settings, "LLM_CRAWLER_WORKER_HEARTBEAT_KEY", "") or "").strip()
+        key = explicit or f"{_llm_prefix()}:worker:heartbeat"
         client.setex(key, ttl, json.dumps(payload))
     except Exception:
         return
@@ -340,14 +341,8 @@ def get_worker_heartbeat() -> Optional[Dict[str, Any]]:
     client = get_redis_client()
     if not client:
         return None
-    key = str(
-        getattr(
-            settings,
-            "LLM_CRAWLER_WORKER_HEARTBEAT_KEY",
-            "llmCrawler:worker:heartbeat",
-        )
-        or "llmCrawler:worker:heartbeat"
-    )
+    explicit = str(getattr(settings, "LLM_CRAWLER_WORKER_HEARTBEAT_KEY", "") or "").strip()
+    key = explicit or f"{_llm_prefix()}:worker:heartbeat"
     try:
         raw = client.get(key)
         if not raw:

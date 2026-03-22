@@ -70,7 +70,7 @@ def _ensure_worker_available() -> None:
         return
     raise HTTPException(
         status_code=503,
-        detail="LLM worker is unavailable or stale. Check worker deployment and REDIS_URL, then retry.",
+        detail="LLM worker is unavailable or stale. Check worker deployment, /api/ops/status, and the Redis env split (LLM_CRAWLER_REDIS_URL / CELERY_BROKER_URL), then retry.",
     )
 
 

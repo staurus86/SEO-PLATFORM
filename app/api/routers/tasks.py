@@ -4,6 +4,7 @@ Task management API endpoints.
 Covers: GET/DELETE /tasks/{task_id}, artifact serving,
 stale-artifact cleanup, rate-limit info, and Celery status.
 """
+from urllib.parse import urlsplit, urlunsplit
 from typing import Optional
 
 from fastapi import APIRouter
@@ -22,6 +23,22 @@ from app.core.progress import progress_tracker
 from app.tools.llmCrawler.queue import get_worker_heartbeat, queue_depth
 
 router = APIRouter(tags=["Tasks"])
+
+
+def _mask_redis_url(url: Optional[str]) -> Optional[str]:
+    raw = str(url or "").strip()
+    if not raw:
+        return None
+    try:
+        parsed = urlsplit(raw)
+        host = parsed.hostname or ""
+        port = f":{parsed.port}" if parsed.port else ""
+        db = parsed.path or ""
+        user = parsed.username or ""
+        auth = f"{user}:***@" if user else ""
+        return urlunsplit((parsed.scheme, f"{auth}{host}{port}", db, "", ""))
+    except Exception:
+        return "***"
 
 
 # ─── task CRUD ─────────────────────────────────────────────────────────────
@@ -216,7 +233,7 @@ async def get_rate_limit():
 async def celery_status():
     """Celery worker status check."""
     try:
-        from app.celery_app import celery_app
+        from app.core.celery_app import celery_app
 
         inspect = celery_app.control.inspect(timeout=2)
         active = inspect.active()
@@ -276,6 +293,20 @@ async def ops_status():
         "redis": {
             "ok": redis_ok,
             "error": redis_error,
+            "urls": {
+                "task_store": _mask_redis_url(settings.TASK_STORE_REDIS_URL),
+                "progress": _mask_redis_url(settings.PROGRESS_REDIS_URL),
+                "rate_limit": _mask_redis_url(settings.RATE_LIMIT_REDIS_URL),
+                "llm_crawler": _mask_redis_url(settings.LLM_CRAWLER_REDIS_URL),
+                "celery_broker": _mask_redis_url(settings.CELERY_BROKER_URL),
+                "celery_backend": _mask_redis_url(settings.CELERY_RESULT_BACKEND),
+            },
+            "prefixes": {
+                "task_store": settings.TASK_STORE_REDIS_PREFIX,
+                "progress": settings.PROGRESS_REDIS_PREFIX,
+                "rate_limit": settings.RATE_LIMIT_REDIS_PREFIX,
+                "llm_crawler": settings.LLM_CRAWLER_REDIS_PREFIX,
+            },
         },
         "llm_worker": {
             "healthy": worker_healthy,

@@ -24,6 +24,7 @@ class OpsStatusTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(payload["redis"]["ok"])
         self.assertTrue(payload["llm_worker"]["healthy"])
         self.assertEqual(payload["llm_worker"]["queue_depth"], 3)
+        self.assertTrue(str(payload["redis"]["urls"]["task_store"]).startswith("redis://"))
 
     async def test_ops_status_reports_degraded_when_redis_unavailable(self):
         from app.api.routers.tasks import ops_status

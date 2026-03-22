@@ -37,7 +37,7 @@ class ProgressTracker:
             try:
                 import redis
 
-                self._redis_client = redis.from_url(settings.REDIS_URL, decode_responses=True)
+                self._redis_client = redis.from_url(settings.PROGRESS_REDIS_URL, decode_responses=True)
                 self._redis_client.ping()
                 logger.info("Progress tracker: Redis connection established")
             except Exception as e:
@@ -47,7 +47,8 @@ class ProgressTracker:
         return self._redis_client
     
     def _get_key(self, task_id: str) -> str:
-        return f"task_progress:{task_id}"
+        prefix = str(getattr(settings, "PROGRESS_REDIS_PREFIX", "task_progress") or "task_progress").strip(": ")
+        return f"{prefix}:{task_id}"
 
     def _mark_redis_unavailable(self, exc: Exception, where: str) -> None:
         cooldown = max(5, int(getattr(settings, "REDIS_RETRY_COOLDOWN_SEC", 30) or 30))

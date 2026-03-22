@@ -64,12 +64,19 @@ def get_redis_client():
         import redis
         from app.config import settings
 
-        _redis_client = redis.from_url(settings.REDIS_URL, decode_responses=True)
+        _redis_client = redis.from_url(settings.TASK_STORE_REDIS_URL, decode_responses=True)
         _redis_client.ping()
         print("[API] Redis connection established for task results")
     except Exception as exc:
         _mark_redis_unavailable(exc, "connect")
     return _redis_client
+
+
+def _task_key(task_id: str) -> str:
+    from app.config import settings
+
+    prefix = str(getattr(settings, "TASK_STORE_REDIS_PREFIX", "task") or "task").strip(": ")
+    return f"{prefix}:{task_id}"
 
 
 def cleanup_task_results_memory(idle_seconds: float = 0.0, aggressive: bool = False) -> Dict[str, Any]:
@@ -189,7 +196,7 @@ def get_task_result(task_id: str) -> Optional[Dict[str, Any]]:
     redis_client = get_redis_client()
     if redis_client:
         try:
-            data = redis_client.get(f"task:{task_id}")
+            data = redis_client.get(_task_key(task_id))
             if data:
                 return json.loads(data)
         except Exception as exc:
@@ -211,7 +218,7 @@ def _save_task_payload(task_id: str, data: Dict[str, Any]) -> None:
     redis_client = get_redis_client()
     if redis_client:
         try:
-            redis_client.setex(f"task:{task_id}", 86400, json.dumps(data))
+            redis_client.setex(_task_key(task_id), 86400, json.dumps(data))
             return
         except Exception as exc:
             _mark_redis_unavailable(exc, "set")
@@ -353,7 +360,7 @@ def delete_task_result(task_id: str) -> bool:
     redis_client = get_redis_client()
     if redis_client:
         try:
-            deleted = bool(redis_client.delete(f"task:{task_id}")) or deleted
+            deleted = bool(redis_client.delete(_task_key(task_id))) or deleted
         except Exception as exc:
             _mark_redis_unavailable(exc, "delete")
     with _task_lock:

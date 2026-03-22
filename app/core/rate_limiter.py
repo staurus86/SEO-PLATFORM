@@ -22,7 +22,7 @@ class RateLimiter:
         """Lazy initialization of Redis client"""
         if self._redis_client is None and self._redis_available:
             try:
-                self._redis_client = redis.from_url(settings.REDIS_URL, decode_responses=True)
+                self._redis_client = redis.from_url(settings.RATE_LIMIT_REDIS_URL, decode_responses=True)
                 # Test connection
                 self._redis_client.ping()
                 logger.info("Redis connection established")
@@ -34,7 +34,8 @@ class RateLimiter:
     
     def _get_key(self, ip: str) -> str:
         """Генерирует ключ для Redis"""
-        return f"rate_limit:{ip}"
+        prefix = str(getattr(settings, "RATE_LIMIT_REDIS_PREFIX", "ratelimit") or "ratelimit").strip(": ")
+        return f"{prefix}:legacy:{ip}"
     
     def check_rate_limit(self, ip: str) -> dict:
         """
