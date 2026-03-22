@@ -8656,6 +8656,171 @@ function _batchExtractIssues(item, toolType) {
     return parts.join(', ') || '—';
 }
 
+function _batchFriendlyToolLabel(toolType) {
+    const value = String(toolType || '').toLowerCase().replace(/^batch_/, '');
+    const labels = {
+        onpage: 'OnPage Audit',
+        redirect: 'Redirect Checker',
+        cwv: 'Core Web Vitals',
+        core_web_vitals: 'Core Web Vitals',
+        bot: 'Bot Checker',
+        'bot-check': 'Bot Checker',
+        render: 'Render Audit',
+        mobile: 'Mobile Audit',
+        robots: 'Robots.txt',
+        sitemap: 'Sitemap',
+        link_profile: 'Link Profile',
+    };
+    return labels[value] || value.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()) || 'Batch';
+}
+
+function _batchRenderIssueList(items, maxItems = 6) {
+    if (!Array.isArray(items) || items.length === 0) {
+        return '<div class="text-sm" style="color:var(--ds-text-muted);">Проблем не обнаружено</div>';
+    }
+    return `<ul class="text-sm space-y-1" style="color:var(--ds-text-secondary);">${items.slice(0, maxItems).map((entry) => {
+        const text = typeof entry === 'string'
+            ? entry
+            : entry?.title || entry?.text || entry?.message || entry?.code || JSON.stringify(entry);
+        return `<li>• ${escapeHtml(String(text || ''))}</li>`;
+    }).join('')}</ul>`;
+}
+
+function _batchMetricMini(label, value, tone = 'var(--ds-text)') {
+    return `
+        <div class="text-center rounded-lg p-3" style="background:var(--ds-bg-soft);border:1px solid var(--ds-border);">
+            <div class="text-xl font-bold" style="color:${tone}">${escapeHtml(String(value ?? '—'))}</div>
+            <div class="text-xs" style="color:var(--ds-text-muted)">${escapeHtml(String(label || ''))}</div>
+        </div>`;
+}
+
+function _batchRenderSuccessDetails(item, toolType) {
+    const r = item?.result?.results || item?.result || {};
+    const t = String(toolType || '').toLowerCase();
+
+    if (t.includes('robots')) {
+        const found = Boolean(r.robots_txt_found);
+        const recs = Array.isArray(r.recommendations) ? r.recommendations : [];
+        return `
+            <div class="space-y-3">
+                <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+                    ${_batchMetricMini('robots.txt', found ? 'Найден' : 'Не найден', found ? 'var(--ds-success)' : 'var(--ds-danger)')}
+                    ${_batchMetricMini('Правила', Number(r.rule_count ?? r.total_rules ?? 0))}
+                    ${_batchMetricMini('Sitemaps', Number(r.sitemap_count ?? (Array.isArray(r.sitemaps) ? r.sitemaps.length : 0)))}
+                    ${_batchMetricMini('Quality', Number(r.quality_score ?? 0), _unifiedScoreColor(Number(r.quality_score ?? 0)))}
+                </div>
+                ${_batchRenderIssueList(recs.length ? recs : (r.issues || r.warnings || r.parser_warnings || []))}
+            </div>`;
+    }
+
+    if (t.includes('sitemap')) {
+        const valid = r.valid;
+        const messages = [...(r.errors || []), ...(r.warnings || []), ...(r.highlights || [])];
+        return `
+            <div class="space-y-3">
+                <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+                    ${_batchMetricMini('Статус', valid === true ? 'Валидна' : valid === false ? 'Невалидна' : 'Неизвестно', valid === true ? 'var(--ds-success)' : valid === false ? 'var(--ds-danger)' : 'var(--ds-warning)')}
+                    ${_batchMetricMini('URL', Number(r.urls_count ?? 0))}
+                    ${_batchMetricMini('Файлов', Number(r.sitemaps_scanned ?? r.files_count ?? 0))}
+                    ${_batchMetricMini('Quality', Number(r.quality_score ?? 0), _unifiedScoreColor(Number(r.quality_score ?? 0)))}
+                </div>
+                ${_batchRenderIssueList(messages)}
+            </div>`;
+    }
+
+    if (t.includes('bot')) {
+        const s = r.summary || {};
+        return `
+            <div class="space-y-3">
+                <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+                    ${_batchMetricMini('Доступны', Number(s.accessible ?? 0), 'var(--ds-success)')}
+                    ${_batchMetricMini('Индекс.', Number(s.indexable ?? 0))}
+                    ${_batchMetricMini('Заблокир.', Number(s.robots_disallowed ?? 0), 'var(--ds-danger)')}
+                    ${_batchMetricMini('Avg time', `${Math.round(Number(s.avg_response_time_ms ?? 0))}ms`)}
+                </div>
+                ${_batchRenderIssueList(r.priority_blockers || r.issues || [])}
+            </div>`;
+    }
+
+    if (t.includes('cwv') || t.includes('core_web_vitals')) {
+        const summary = r.summary || {};
+        const metrics = r.metrics || {};
+        const lcpMs = metrics?.lcp?.lab_value_ms ?? metrics?.lcp?.field_value_ms;
+        const cls = metrics?.cls?.lab_value ?? metrics?.cls?.field_value;
+        const inpMs = metrics?.inp?.lab_value_ms ?? metrics?.inp?.field_value_ms;
+        return `
+            <div class="space-y-3">
+                <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+                    ${_batchMetricMini('Performance', Number(summary.performance_score ?? 0), _unifiedScoreColor(Number(summary.performance_score ?? 0)))}
+                    ${_batchMetricMini('LCP', lcpMs != null ? `${(Number(lcpMs) / 1000).toFixed(1)}s` : '—')}
+                    ${_batchMetricMini('CLS', cls != null ? Number(cls).toFixed(3) : '—')}
+                    ${_batchMetricMini('INP', inpMs != null ? `${Math.round(Number(inpMs))}ms` : '—')}
+                </div>
+                ${_batchRenderIssueList(r.opportunities || r.issues || [])}
+            </div>`;
+    }
+
+    if (t.includes('redirect')) {
+        const summary = r.summary || {};
+        const scenarios = Array.isArray(r.scenarios) ? r.scenarios.filter((entry) => ['warning', 'error', 'failed'].includes(String(entry.status || '').toLowerCase())) : [];
+        return `
+            <div class="space-y-3">
+                <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+                    ${_batchMetricMini('Оценка', summary.quality_grade ?? summary.overall_grade ?? '—')}
+                    ${_batchMetricMini('Passed', Number(summary.passed ?? 0), 'var(--ds-success)')}
+                    ${_batchMetricMini('Errors', Number(summary.errors ?? summary.failed ?? 0), 'var(--ds-danger)')}
+                    ${_batchMetricMini('Warnings', Number(summary.warnings ?? 0), 'var(--ds-warning)')}
+                </div>
+                ${_batchRenderIssueList(scenarios)}
+            </div>`;
+    }
+
+    if (t.includes('render')) {
+        const summary = r.summary || {};
+        const findings = [...(r.issues || []), ...(r.findings || [])];
+        return `
+            <div class="space-y-3">
+                <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+                    ${_batchMetricMini('Score', Number(summary.score ?? summary.quality_score ?? 0), _unifiedScoreColor(Number(summary.score ?? summary.quality_score ?? 0)))}
+                    ${_batchMetricMini('JS-only', Number(summary.js_only_nodes ?? 0))}
+                    ${_batchMetricMini('JS Errors', Number(summary.javascript_errors ?? summary.js_errors ?? 0))}
+                    ${_batchMetricMini('Framework', summary.framework || '—')}
+                </div>
+                ${_batchRenderIssueList(findings)}
+            </div>`;
+    }
+
+    if (t.includes('mobile')) {
+        const summary = r.summary || {};
+        return `
+            <div class="space-y-3">
+                <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+                    ${_batchMetricMini('Score', Number(summary.score ?? r.score ?? 0), _unifiedScoreColor(Number(summary.score ?? r.score ?? 0)))}
+                    ${_batchMetricMini('Mobile-friendly', summary.mobile_friendly ? 'Да' : 'Нет', summary.mobile_friendly ? 'var(--ds-success)' : 'var(--ds-danger)')}
+                    ${_batchMetricMini('Устройств', Number(r.devices_tested?.length ?? r.device_results?.length ?? 0))}
+                    ${_batchMetricMini('Проблем', Number(r.issues?.length ?? 0), 'var(--ds-warning)')}
+                </div>
+                ${_batchRenderIssueList(r.issues || [])}
+            </div>`;
+    }
+
+    if (t.includes('onpage')) {
+        const summary = r.summary || {};
+        return `
+            <div class="space-y-3">
+                <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+                    ${_batchMetricMini('Score', Number(summary.score ?? r.score ?? 0), _unifiedScoreColor(Number(summary.score ?? r.score ?? 0)))}
+                    ${_batchMetricMini('Слов', Number(r.word_count ?? 0))}
+                    ${_batchMetricMini('Title', Number(r.title_length ?? 0))}
+                    ${_batchMetricMini('Desc', Number(r.meta_description_length ?? 0))}
+                </div>
+                ${_batchRenderIssueList(r.issues || r.recommendations || [])}
+            </div>`;
+    }
+
+    return `<pre class="text-xs overflow-auto rounded p-3" style="background:var(--ds-bg);color:var(--ds-text);max-height:400px;">${escapeHtml(JSON.stringify(item.result, null, 2))}</pre>`;
+}
+
 function generateBatchResultsHTML(result) {
     // Unwrap: find the level that has .summary and .items
     const r = (result.summary && result.items) ? result
@@ -8671,7 +8836,7 @@ function generateBatchResultsHTML(result) {
     const url = result.url || r.url || '';
     const tid = result.task_id || taskId || '';
 
-    const toolLabel = (toolType || 'batch').replace(/^batch_/, '').replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+    const toolLabel = _batchFriendlyToolLabel(toolType);
 
     // --- Header ---
     const headerHtml = buildToolHeader({
@@ -8747,7 +8912,7 @@ function generateBatchResultsHTML(result) {
             const scoreStr = score !== null ? score : '—';
             const scoreColor = score !== null ? _unifiedScoreColor(score) : 'var(--ds-text-muted)';
             const content = isSuccess
-                ? `<pre class="text-xs overflow-auto rounded p-3" style="background:var(--ds-bg);color:var(--ds-text);max-height:400px;">${escapeHtml(JSON.stringify(item.result, null, 2))}</pre>`
+                ? _batchRenderSuccessDetails(item, toolType)
                 : `<div class="text-sm" style="color:var(--ds-danger);padding:0.75rem;">${escapeHtml(String(item.error || 'Unknown error'))}</div>`;
             return `
             <details class="ds-card" style="padding:0;">

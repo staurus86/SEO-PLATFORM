@@ -16,6 +16,9 @@ class UnifiedUiGuards(unittest.TestCase):
         self.assertIn("SUCCESS: 'Готово'", content)
         self.assertIn("FAILURE: 'Ошибка'", content)
         self.assertIn("const cwvEntry = toolResults.cwv || toolResults.core_web_vitals || {}", content)
+        self.assertIn("function _batchRenderSuccessDetails(item, toolType)", content)
+        self.assertIn("if (t.includes('robots')) {", content)
+        self.assertIn("const toolLabel = _batchFriendlyToolLabel(toolType);", content)
 
     def test_history_has_friendly_unified_label(self):
         js_path = Path(__file__).resolve().parents[1] / "app" / "static" / "js" / "history.js"

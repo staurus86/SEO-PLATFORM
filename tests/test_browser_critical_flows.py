@@ -103,6 +103,9 @@ class BrowserCriticalFlowsTests(unittest.TestCase):
         def run(context):
             self._exercise_unified_flow(context, capture_visual=True)
             self._exercise_batch_flow(context)
+            self._exercise_batch_robots_flow(context)
+            self._exercise_bot_batch_checkbox_flow(context)
+            self._exercise_cwv_competitor_checkbox_flow(context)
             self._exercise_sitepro_batch_flow(context)
             self._exercise_llm_v2_visual_flow(context)
 
@@ -261,6 +264,264 @@ class BrowserCriticalFlowsTests(unittest.TestCase):
         page.wait_for_url(f"{self.base_url}/results/{task_id}", timeout=10000)
         page.wait_for_selector("text=Batch Mode", timeout=10000)
         page.wait_for_selector("text=https://example.com/about", timeout=10000)
+        page.close()
+
+    def _exercise_batch_robots_flow(self, context):
+        task_id = "batch-robots-e2e-1"
+        batch_result = {
+            "task_id": task_id,
+            "status": "SUCCESS",
+            "task_type": "batch_robots",
+            "results": {
+                "summary": {
+                    "tool": "robots",
+                    "total_urls": 2,
+                    "success": 2,
+                    "errors": 0,
+                },
+                "items": [
+                    {
+                        "url": "https://example.com/",
+                        "status": "success",
+                        "result": {
+                            "robots_txt_found": True,
+                            "quality_score": 88,
+                            "rule_count": 6,
+                            "sitemap_count": 1,
+                            "recommendations": ["Always declare sitemap", "Group rules by user-agent"],
+                        },
+                    },
+                    {
+                        "url": "https://example.com/about",
+                        "status": "success",
+                        "result": {
+                            "robots_txt_found": True,
+                            "quality_score": 91,
+                            "rule_count": 4,
+                            "sitemap_count": 1,
+                            "recommendations": [],
+                        },
+                    },
+                ],
+            },
+        }
+        captured_payload = {}
+
+        def capture_batch(route):
+            captured_payload.update(route.request.post_data_json)
+            route.fulfill(status=200, content_type="application/json", body=f'{{"task_id":"{task_id}","status":"PENDING"}}')
+
+        context.route(f"{self.base_url}/api/tasks/batch", capture_batch)
+        context.route(
+            f"{self.base_url}/api/tasks/{task_id}",
+            lambda route: route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps(
+                    {
+                        "task_id": task_id,
+                        "status": "SUCCESS",
+                        "task_type": "batch_robots",
+                        "progress": 100,
+                        "status_message": "Done",
+                        "result": batch_result,
+                    }
+                ),
+            ),
+        )
+
+        page = context.new_page()
+        page.goto(f"{self.base_url}/", wait_until="domcontentloaded")
+        page.select_option("#batch-tool", "robots")
+        page.fill("#batch-urls", "https://example.com/\nhttps://example.com/about")
+        page.check("#batch-mode-card input[name='use_proxy']")
+        page.click("#batch-mode-card button[type='submit']")
+        page.wait_for_url(f"{self.base_url}/results/{task_id}", timeout=10000)
+        page.wait_for_selector("text=Batch Robots.txt", timeout=10000)
+        page.locator("#results-content details").first.click()
+        page.wait_for_selector("text=Правила", timeout=5000)
+        self.assertEqual(captured_payload.get("tool"), "robots")
+        self.assertTrue(captured_payload.get("use_proxy"))
+        self.assertEqual(len(captured_payload.get("urls", [])), 2)
+        self.assertEqual(page.locator("#results-content pre").count(), 0)
+        page.close()
+
+    def _exercise_bot_batch_checkbox_flow(self, context):
+        task_id = "bot-batch-e2e-1"
+        captured_payload = {}
+
+        bot_result = {
+            "task_id": task_id,
+            "status": "SUCCESS",
+            "task_type": "bot_check",
+            "url": "https://example.com/",
+            "result": {
+                "results": {
+                    "summary": {
+                        "total": 2,
+                        "accessible": 2,
+                        "indexable": 2,
+                        "robots_disallowed": 0,
+                        "avg_response_time_ms": 240,
+                    },
+                    "priority_blockers": [],
+                }
+            },
+        }
+
+        def capture_bot(route):
+            captured_payload.update(route.request.post_data_json)
+            route.fulfill(status=200, content_type="application/json", body=f'{{"task_id":"{task_id}","status":"PENDING"}}')
+
+        context.route(f"{self.base_url}/api/tasks/bot-check", capture_bot)
+        context.route(
+            f"{self.base_url}/api/tasks/{task_id}",
+            lambda route: route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps(
+                    {
+                        "task_id": task_id,
+                        "status": "SUCCESS",
+                        "task_type": "bot_check",
+                        "progress": 100,
+                        "status_message": "Done",
+                        "result": bot_result,
+                    }
+                ),
+            ),
+        )
+
+        page = context.new_page()
+        page.goto(f"{self.base_url}/", wait_until="domcontentloaded")
+        page.select_option("form[onsubmit*='bot-check'] .js-bot-scan-mode", "batch")
+        page.fill("form[onsubmit*='bot-check'] textarea[name='batch_urls_text']", "https://example.com/\nhttps://example.com/about")
+        page.check("form[onsubmit*='bot-check'] input[name='bot_groups'][value='search']")
+        page.check("form[onsubmit*='bot-check'] input[name='bot_groups'][value='ai']")
+        page.check("form[onsubmit*='bot-check'] input[name='use_proxy']")
+        page.click("form[onsubmit*='bot-check'] button[type='submit']")
+        page.wait_for_url(f"{self.base_url}/results/{task_id}", timeout=10000)
+        self.assertEqual(captured_payload.get("scan_mode"), "batch")
+        self.assertEqual(captured_payload.get("batch_urls"), ["https://example.com/", "https://example.com/about"])
+        self.assertEqual(captured_payload.get("bot_groups"), ["search", "ai"])
+        self.assertTrue(captured_payload.get("use_proxy"))
+        page.close()
+
+    def _exercise_cwv_competitor_checkbox_flow(self, context):
+        task_id = "cwv-competitor-e2e-1"
+        captured_payload = {}
+
+        cwv_result = {
+            "task_id": task_id,
+            "status": "SUCCESS",
+            "task_type": "core_web_vitals",
+            "url": "https://example.com/",
+            "result": {
+                "results": {
+                    "mode": "competitor",
+                    "strategy": "desktop",
+                    "summary": {
+                        "total_urls": 2,
+                        "successful_urls": 2,
+                        "failed_urls": 0,
+                        "competitors_total": 1,
+                        "primary_url": "https://example.com/",
+                        "primary_rank": 2,
+                    },
+                    "primary": {
+                        "url": "https://example.com/",
+                        "summary": {"performance_score": 73, "core_web_vitals_status": "needs_improvement"},
+                        "metrics": {
+                            "lcp": {"field_value_ms": 2800},
+                            "inp": {"field_value_ms": 210},
+                            "cls": {"field_value": 0.12},
+                        },
+                    },
+                    "competitors": [
+                        {
+                            "url": "https://competitor.example/",
+                            "summary": {"performance_score": 89, "core_web_vitals_status": "good"},
+                        }
+                    ],
+                    "comparison_rows": [
+                        {
+                            "url": "https://example.com/",
+                            "status": "success",
+                            "cwv_status": "needs_improvement",
+                            "score": 73,
+                            "lcp_ms": 2800,
+                            "inp_ms": 210,
+                            "cls": 0.12,
+                            "score_delta_vs_primary": 0,
+                            "lcp_delta_ms_vs_primary": 0,
+                            "inp_delta_ms_vs_primary": 0,
+                            "cls_delta_vs_primary": 0,
+                            "top_focus": "Reduce JS",
+                        },
+                        {
+                            "url": "https://competitor.example/",
+                            "status": "success",
+                            "cwv_status": "good",
+                            "score": 89,
+                            "lcp_ms": 1900,
+                            "inp_ms": 120,
+                            "cls": 0.03,
+                            "score_delta_vs_primary": 16,
+                            "lcp_delta_ms_vs_primary": -900,
+                            "inp_delta_ms_vs_primary": -90,
+                            "cls_delta_vs_primary": -0.09,
+                            "top_focus": "Fast hero render",
+                        },
+                    ],
+                    "gaps_for_primary": ["LCP slower than competitor"],
+                    "strengths_of_primary": ["Stable CLS"],
+                    "common_opportunities": [],
+                    "action_plan": [],
+                    "recommendations": [],
+                }
+            },
+        }
+
+        def capture_cwv(route):
+            captured_payload.update(route.request.post_data_json)
+            route.fulfill(status=200, content_type="application/json", body=f'{{"task_id":"{task_id}","status":"PENDING"}}')
+
+        context.route(f"{self.base_url}/api/tasks/core-web-vitals", capture_cwv)
+        context.route(
+            f"{self.base_url}/api/tasks/{task_id}",
+            lambda route: route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps(
+                    {
+                        "task_id": task_id,
+                        "status": "SUCCESS",
+                        "task_type": "core_web_vitals",
+                        "progress": 100,
+                        "status_message": "Done",
+                        "result": cwv_result,
+                    }
+                ),
+            ),
+        )
+
+        page = context.new_page()
+        page.goto(f"{self.base_url}/", wait_until="domcontentloaded")
+        page.select_option(".js-cwv-scan-mode", "batch")
+        page.check(".js-cwv-competitor-mode")
+        page.fill("#cwv-url", "https://example.com/")
+        page.fill("textarea[name='batch_urls_text']", "https://competitor.example/")
+        page.check("#cwv-card input[name='use_proxy']")
+        page.check("#cwv-card input[name='combined']")
+        page.click("#cwv-card button[type='submit']")
+        page.wait_for_url(f"{self.base_url}/results/{task_id}", timeout=10000)
+        page.wait_for_selector("text=Анализ конкурентов", timeout=10000)
+        self.assertTrue(captured_payload.get("competitor_mode"))
+        self.assertEqual(captured_payload.get("scan_mode"), "batch")
+        self.assertEqual(captured_payload.get("url"), "https://example.com/")
+        self.assertEqual(captured_payload.get("batch_urls"), ["https://example.com/", "https://competitor.example/"])
+        self.assertTrue(captured_payload.get("use_proxy"))
+        self.assertTrue(captured_payload.get("combined"))
         page.close()
 
     def _exercise_sitepro_batch_flow(self, context):
