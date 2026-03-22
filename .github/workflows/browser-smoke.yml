@@ -39,3 +39,11 @@ jobs:
             tests/test_smoke_existing_tools.py \
             tests/test_llm_crawler_feature_gate.py \
             -q
+
+      - name: Upload browser smoke screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-smoke-screenshots
+          path: tests/.artifacts/browser-smoke
+          if-no-files-found: ignore

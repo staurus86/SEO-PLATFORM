@@ -54,6 +54,7 @@ reports_output/
 
 # Playwright
 .ms-playwright/
+tests/.artifacts/
 
 # Local planning scratch files
 MASTER_MIGRATION_AND_SCALING_PLAN.txt
