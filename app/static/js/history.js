@@ -63,7 +63,7 @@ function getToolName(endpoint) {
         'sitemap-validate': 'Sitemap.xml',
         'render-audit': 'Аудит рендеринга',
         'mobile-check': 'Мобильная версия',
-        'bot-check': 'Проверка ботов',
+        'bot-check': 'Bot Checker',
         'clusterizer': 'Кластеризатор ключей',
         'link-profile-audit': 'Аудит ссылочного профиля',
         'redirect-checker': 'Redirect Checker',

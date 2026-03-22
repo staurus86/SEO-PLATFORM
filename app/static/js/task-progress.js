@@ -432,12 +432,12 @@ function _formatHeartbeatAge(value) {
 }
 
 function _formatTaskType(taskType) {
-    const value = String(taskType || '').trim().toLowerCase();
+    const value = String(taskType || '').trim().toLowerCase().replace(/-/g, '_');
     const labels = {
         unified_audit: 'Full SEO Audit',
         robots_check: 'Robots.txt',
         sitemap_validate: 'Sitemap',
-        bot_check: 'Bot Check',
+        bot_check: 'Bot Checker',
         mobile_check: 'Mobile Audit',
         render_audit: 'Render Audit',
         site_audit_pro: 'Site Audit Pro',
@@ -454,10 +454,10 @@ function _formatTaskType(taskType) {
 function _formatTaskStatus(status) {
     const value = String(status || '').trim().toUpperCase();
     const labels = {
-        PENDING: 'PENDING',
-        RUNNING: 'RUNNING',
-        SUCCESS: 'SUCCESS',
-        FAILURE: 'FAILURE',
+        PENDING: 'В очереди',
+        RUNNING: 'В работе',
+        SUCCESS: 'Готово',
+        FAILURE: 'Ошибка',
     };
     return labels[value] || value || '-';
 }
