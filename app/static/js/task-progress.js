@@ -3,13 +3,35 @@ let taskTerminalHandled = false;
 let statusRequestInFlight = false;
 let lastProgressStateKey = '';
 const PROGRESS_STAGE_ORDER = ['queue', 'fetch', 'render', 'analyze', 'done'];
+const TASK_STATUS_POLL_MS = 5000;
+const TASK_STATUS_WS_WATCHDOG_MS = 15000;
 
 // ---------------------------------------------------------------------------
 // WebSocket real-time updates (falls back to polling when unavailable)
 // ---------------------------------------------------------------------------
 let _wsHandle = null;
 
-function connectTaskWebSocket(tid, onMessage) {
+function _clearTaskPolling() {
+    if (pollInterval) {
+        clearInterval(pollInterval);
+        pollInterval = null;
+    }
+}
+
+function _startTaskPolling(intervalMs) {
+    _clearTaskPolling();
+    pollInterval = setInterval(checkTaskStatus, intervalMs);
+}
+
+function _disposeTaskStatusWatchers() {
+    _clearTaskPolling();
+    if (_wsHandle) {
+        _wsHandle.close();
+        _wsHandle = null;
+    }
+}
+
+function connectTaskWebSocket(tid, onMessage, hooks = {}) {
     const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
     const wsUrl = protocol + '//' + location.host + '/ws/tasks/' + tid;
     var ws = null;
@@ -19,6 +41,7 @@ function connectTaskWebSocket(tid, onMessage) {
         ws = new WebSocket(wsUrl);
         ws.onopen = function() {
             console.log('[WS] Connected for task:', tid);
+            if (typeof hooks.onOpen === 'function') hooks.onOpen();
             pingTimer = setInterval(function() {
                 if (ws && ws.readyState === WebSocket.OPEN) ws.send('ping');
             }, 30000);
@@ -34,6 +57,7 @@ function connectTaskWebSocket(tid, onMessage) {
             if (pingTimer) clearInterval(pingTimer);
             pingTimer = null;
             console.log('[WS] Disconnected, falling back to polling');
+            if (typeof hooks.onClose === 'function') hooks.onClose();
             ws = null;
         };
         ws.onerror = function() {
@@ -310,7 +334,7 @@ function normalizeMojibakeDeep(input) {
 
 document.addEventListener('DOMContentLoaded', function() {
     checkTaskStatus();
-    pollInterval = setInterval(checkTaskStatus, 1500);
+    _startTaskPolling(TASK_STATUS_POLL_MS);
 
     // Try to establish WebSocket for real-time updates
     if (typeof taskId !== 'undefined' && taskId) {
@@ -322,9 +346,19 @@ document.addEventListener('DOMContentLoaded', function() {
             // WebSocket delivers a partial or full update — do a fresh poll
             // to get the complete payload (result can be large, WS sends slim updates).
             checkTaskStatus();
+        }, {
+            onOpen: function() {
+                _startTaskPolling(TASK_STATUS_WS_WATCHDOG_MS);
+            },
+            onClose: function() {
+                if (!taskTerminalHandled) _startTaskPolling(TASK_STATUS_POLL_MS);
+            }
         });
     }
 });
+
+window.addEventListener('pagehide', _disposeTaskStatusWatchers);
+window.addEventListener('beforeunload', _disposeTaskStatusWatchers);
 
 function _deriveStage(data) {
     const msg = String(data.status_message || '').toLowerCase();
@@ -580,13 +614,11 @@ async function checkTaskStatus() {
         
         if (data.status === 'SUCCESS') {
             taskTerminalHandled = true;
-            clearInterval(pollInterval);
-            if (_wsHandle) _wsHandle.close();
+            _disposeTaskStatusWatchers();
             showResults(data.result);
         } else if (data.status === 'FAILURE') {
             taskTerminalHandled = true;
-            clearInterval(pollInterval);
-            if (_wsHandle) _wsHandle.close();
+            _disposeTaskStatusWatchers();
             showError(data);
         }
     } catch (error) {

@@ -21,6 +21,7 @@ class ProgressTracker:
         self._memory_store = {}  # Fallback storage
         self._memory_updated_at = {}
         self._memory_last_access_at = {}
+        self._memory_payload_size_bytes = {}
         self._memory_lock = threading.RLock()
         self.ttl = 3600 * 2  # 2 hours
     
@@ -57,27 +58,31 @@ class ProgressTracker:
     def cleanup_memory(self, idle_seconds: float = 0.0, aggressive: bool = False) -> Dict[str, Any]:
         ttl_sec = max(60, int(getattr(settings, "PROGRESS_MEMORY_TTL_SEC", self.ttl) or self.ttl))
         max_items = max(10, int(getattr(settings, "PROGRESS_MEMORY_MAX_ITEMS", 2000) or 2000))
+        max_bytes = max(1024, int(getattr(settings, "PROGRESS_MEMORY_MAX_BYTES", 8 * 1024 * 1024) or (8 * 1024 * 1024)))
         idle_keep_sec = max(60, int(getattr(settings, "PROGRESS_IDLE_KEEP_SEC", 900) or 900))
         now = time.time()
         removed_expired = 0
         removed_idle = 0
         removed_overflow = 0
+        removed_oversize = 0
+
+        def _drop(task_id: str) -> None:
+            self._memory_store.pop(task_id, None)
+            self._memory_updated_at.pop(task_id, None)
+            self._memory_last_access_at.pop(task_id, None)
+            self._memory_payload_size_bytes.pop(task_id, None)
 
         with self._memory_lock:
             for task_id, updated_at in list(self._memory_updated_at.items()):
                 if now - updated_at > ttl_sec:
-                    self._memory_store.pop(task_id, None)
-                    self._memory_updated_at.pop(task_id, None)
-                    self._memory_last_access_at.pop(task_id, None)
+                    _drop(task_id)
                     removed_expired += 1
 
             if aggressive and idle_seconds >= idle_keep_sec:
                 for task_id in list(self._memory_store.keys()):
                     last_access = self._memory_last_access_at.get(task_id, self._memory_updated_at.get(task_id, now))
                     if now - last_access >= idle_keep_sec:
-                        self._memory_store.pop(task_id, None)
-                        self._memory_updated_at.pop(task_id, None)
-                        self._memory_last_access_at.pop(task_id, None)
+                        _drop(task_id)
                         removed_idle += 1
 
             if len(self._memory_store) > max_items:
@@ -89,22 +94,37 @@ class ProgressTracker:
                 for task_id in eviction_order:
                     if overflow <= 0:
                         break
-                    self._memory_store.pop(task_id, None)
-                    self._memory_updated_at.pop(task_id, None)
-                    self._memory_last_access_at.pop(task_id, None)
+                    _drop(task_id)
                     removed_overflow += 1
                     overflow -= 1
 
+            total_bytes = int(sum(self._memory_payload_size_bytes.values()))
+            if total_bytes > max_bytes:
+                eviction_order = sorted(
+                    list(self._memory_store.keys()),
+                    key=lambda tid: self._memory_last_access_at.get(tid, self._memory_updated_at.get(tid, now)),
+                )
+                for task_id in eviction_order:
+                    if total_bytes <= max_bytes:
+                        break
+                    total_bytes -= int(self._memory_payload_size_bytes.get(task_id, 0))
+                    _drop(task_id)
+                    removed_oversize += 1
+
             items_total = len(self._memory_store)
+            total_bytes = int(sum(self._memory_payload_size_bytes.values()))
 
         return {
             "removed_expired": removed_expired,
             "removed_idle": removed_idle,
             "removed_overflow": removed_overflow,
-            "removed_total": removed_expired + removed_idle + removed_overflow,
+            "removed_oversize": removed_oversize,
+            "removed_total": removed_expired + removed_idle + removed_overflow + removed_oversize,
             "items_total": items_total,
+            "bytes_total": total_bytes,
             "ttl_sec": ttl_sec,
             "max_items": max_items,
+            "max_bytes": max_bytes,
         }
 
     def get_memory_stats(self) -> Dict[str, Any]:
@@ -142,6 +162,7 @@ class ProgressTracker:
             self._memory_store[task_id] = data
             self._memory_updated_at[task_id] = now
             self._memory_last_access_at[task_id] = now
+            self._memory_payload_size_bytes[task_id] = len(json.dumps(data, ensure_ascii=False, default=str).encode("utf-8"))
         self.cleanup_memory(idle_seconds=0.0, aggressive=False)
     
     def get_progress(self, task_id: str) -> Optional[Dict[str, Any]]:
@@ -179,6 +200,7 @@ class ProgressTracker:
                 del self._memory_store[task_id]
             self._memory_updated_at.pop(task_id, None)
             self._memory_last_access_at.pop(task_id, None)
+            self._memory_payload_size_bytes.pop(task_id, None)
 
 
 # Singleton

@@ -148,7 +148,7 @@ class Settings(BaseSettings):
     GEO_PROXY_LIST: str = os.getenv("GEO_PROXY_LIST", "")
 
     # Playwright
-    PLAYWRIGHT_BROWSERS_PATH: str = os.getenv("PLAYWRIGHT_BROWSERS_PATH", "0")
+    PLAYWRIGHT_BROWSERS_PATH: str = os.getenv("PLAYWRIGHT_BROWSERS_PATH", "/ms-playwright")
 
     # Memory guard / in-memory fallback controls
     MEMORY_SWEEP_INTERVAL_SEC: int = int(os.getenv("MEMORY_SWEEP_INTERVAL_SEC", "60"))
@@ -156,9 +156,11 @@ class Settings(BaseSettings):
     MEMORY_GC_COOLDOWN_SEC: int = int(os.getenv("MEMORY_GC_COOLDOWN_SEC", "120"))
     TASK_STORE_MEMORY_TTL_SEC: int = int(os.getenv("TASK_STORE_MEMORY_TTL_SEC", "7200"))
     TASK_STORE_MEMORY_MAX_ITEMS: int = int(os.getenv("TASK_STORE_MEMORY_MAX_ITEMS", "200"))
+    TASK_STORE_MEMORY_MAX_BYTES: int = int(os.getenv("TASK_STORE_MEMORY_MAX_BYTES", str(64 * 1024 * 1024)))
     TASK_STORE_IDLE_KEEP_SEC: int = int(os.getenv("TASK_STORE_IDLE_KEEP_SEC", "900"))
     PROGRESS_MEMORY_TTL_SEC: int = int(os.getenv("PROGRESS_MEMORY_TTL_SEC", "7200"))
     PROGRESS_MEMORY_MAX_ITEMS: int = int(os.getenv("PROGRESS_MEMORY_MAX_ITEMS", "2000"))
+    PROGRESS_MEMORY_MAX_BYTES: int = int(os.getenv("PROGRESS_MEMORY_MAX_BYTES", str(8 * 1024 * 1024)))
     PROGRESS_IDLE_KEEP_SEC: int = int(os.getenv("PROGRESS_IDLE_KEEP_SEC", "900"))
     
 settings = Settings()

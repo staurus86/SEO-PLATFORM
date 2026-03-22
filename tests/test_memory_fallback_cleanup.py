@@ -38,6 +38,18 @@ class TaskStoreMemoryCleanupTests(unittest.TestCase):
             self.assertGreaterEqual(summary["removed_idle"], 1)
 
     @patch("app.api.routers._task_store.get_redis_client", return_value=None)
+    def test_task_store_byte_budget_evicts_large_terminal_payloads_first(self, _redis_mock):
+        with patch.object(settings, "TASK_STORE_MEMORY_MAX_ITEMS", 100, create=True), \
+             patch.object(settings, "TASK_STORE_MEMORY_MAX_BYTES", 1024, create=True):
+            _task_store.create_task_pending("task-active", "clusterizer", "keywords:1")
+            _task_store.create_task_pending("task-heavy", "clusterizer", "keywords:1")
+            _task_store.update_task_state("task-heavy", status="SUCCESS", result={"blob": "x" * 5000})
+
+            self.assertIsNotNone(_task_store.get_task_result("task-active"))
+            self.assertIsNone(_task_store.get_task_result("task-heavy"))
+            self.assertLessEqual(_task_store.get_task_store_memory_stats()["bytes_total"], 1024)
+
+    @patch("app.api.routers._task_store.get_redis_client", return_value=None)
     def test_task_timestamps_track_running_and_completion(self, _redis_mock):
         _task_store.create_task_pending("task-progress", "redirect_checker", "https://example.com")
         pending = _task_store.get_task_result("task-progress")
@@ -77,6 +89,20 @@ class ProgressMemoryCleanupTests(unittest.TestCase):
 
             self.assertIsNone(tracker.get_progress("progress-1"))
             self.assertGreaterEqual(summary["removed_expired"], 1)
+
+    def test_progress_byte_budget_evicts_old_entries(self):
+        tracker = ProgressTracker()
+        tracker._redis_next_retry_ts = time.time() + 3600
+
+        with patch.object(settings, "PROGRESS_MEMORY_MAX_ITEMS", 100, create=True), \
+             patch.object(settings, "PROGRESS_MEMORY_MAX_BYTES", 600, create=True):
+            tracker.update_progress("progress-old", current=1, total=10, message="x" * 5000)
+            tracker._memory_last_access_at["progress-old"] = time.time() - 100
+            tracker.update_progress("progress-new", current=2, total=10, message="ok")
+
+            self.assertIsNone(tracker.get_progress("progress-old"))
+            self.assertIsNotNone(tracker.get_progress("progress-new"))
+            self.assertLessEqual(tracker.get_memory_stats()["bytes_total"], 1024)
 
 
 if __name__ == "__main__":

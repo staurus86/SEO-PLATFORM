@@ -77,12 +77,14 @@ def cleanup_task_results_memory(idle_seconds: float = 0.0, aggressive: bool = Fa
 
     ttl_sec = max(60, int(getattr(settings, "TASK_STORE_MEMORY_TTL_SEC", 7200) or 7200))
     max_items = max(10, int(getattr(settings, "TASK_STORE_MEMORY_MAX_ITEMS", 200) or 200))
+    max_bytes = max(1024, int(getattr(settings, "TASK_STORE_MEMORY_MAX_BYTES", 64 * 1024 * 1024) or (64 * 1024 * 1024)))
     idle_keep_sec = max(60, int(getattr(settings, "TASK_STORE_IDLE_KEEP_SEC", 900) or 900))
     now = time.time()
 
     removed_expired = 0
     removed_idle = 0
     removed_overflow = 0
+    removed_oversize = 0
 
     with _task_lock:
         for task_id, updated_at in list(_task_updated_at.items()):
@@ -116,6 +118,22 @@ def cleanup_task_results_memory(idle_seconds: float = 0.0, aggressive: bool = Fa
                 removed_overflow += 1
                 overflow -= 1
 
+        total_bytes = int(sum(_task_payload_size_bytes.values()))
+        if total_bytes > max_bytes:
+            eviction_order = sorted(
+                list(task_results_memory.keys()),
+                key=lambda tid: (
+                    0 if str((task_results_memory.get(tid) or {}).get("status", "")).upper() in _TERMINAL_STATUSES else 1,
+                    _task_last_access_at.get(tid, _task_updated_at.get(tid, now)),
+                ),
+            )
+            for task_id in eviction_order:
+                if total_bytes <= max_bytes:
+                    break
+                total_bytes -= int(_task_payload_size_bytes.get(task_id, 0))
+                _drop_task_from_memory(task_id)
+                removed_oversize += 1
+
         terminal_count = 0
         active_count = 0
         for payload in task_results_memory.values():
@@ -137,13 +155,15 @@ def cleanup_task_results_memory(idle_seconds: float = 0.0, aggressive: bool = Fa
         "removed_expired": removed_expired,
         "removed_idle": removed_idle,
         "removed_overflow": removed_overflow,
-        "removed_total": removed_expired + removed_idle + removed_overflow,
+        "removed_oversize": removed_oversize,
+        "removed_total": removed_expired + removed_idle + removed_overflow + removed_oversize,
         "items_total": items_total,
         "items_active": active_count,
         "items_terminal": terminal_count,
         "bytes_total": total_bytes,
         "ttl_sec": ttl_sec,
         "max_items": max_items,
+        "max_bytes": max_bytes,
         "oldest_age_sec": oldest_age_sec,
     }
 
