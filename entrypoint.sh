@@ -69,6 +69,12 @@ elif [ "$SERVICE_MODE" = "llm-worker" ]; then
     echo "PLAYWRIGHT_BROWSERS_PATH: ${PLAYWRIGHT_BROWSERS_PATH}"
     echo ""
     exec python -m app.tools.llmCrawler.worker
+elif [ "$SERVICE_MODE" = "maintenance" ]; then
+    echo "Starting in MAINTENANCE mode..."
+    echo ""
+    exec python scripts/run_maintenance.py \
+        --stale-days "${MAINTENANCE_STALE_REPORT_DAYS:-${MAX_REPORT_AGE_DAYS:-7}}" \
+        ${MAINTENANCE_FORCE_GC:+--force-gc}
 else
     echo "Starting in WEB mode..."
     echo ""

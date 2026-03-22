@@ -6,19 +6,22 @@ from pathlib import Path
 
 class UnifiedUiGuards(unittest.TestCase):
     def test_task_progress_has_unified_type_and_localized_status_labels(self):
-        js_path = Path(__file__).resolve().parents[1] / "app" / "static" / "js" / "task-progress.js"
-        content = js_path.read_text(encoding="utf-8")
+        root = Path(__file__).resolve().parents[1]
+        main_js = (root / "app" / "static" / "js" / "task-progress.js").read_text(encoding="utf-8")
+        batch_js = (root / "app" / "static" / "js" / "task-progress-batch.js").read_text(encoding="utf-8")
+        template = (root / "app" / "templates" / "task_progress.html").read_text(encoding="utf-8")
 
-        self.assertIn("unified_audit: 'Full SEO Audit'", content)
-        self.assertIn("replace(/-/g, '_')", content)
-        self.assertIn("PENDING: 'В очереди'", content)
-        self.assertIn("RUNNING: 'В работе'", content)
-        self.assertIn("SUCCESS: 'Готово'", content)
-        self.assertIn("FAILURE: 'Ошибка'", content)
-        self.assertIn("const cwvEntry = toolResults.cwv || toolResults.core_web_vitals || {}", content)
-        self.assertIn("function _batchRenderSuccessDetails(item, toolType)", content)
-        self.assertIn("if (t.includes('robots')) {", content)
-        self.assertIn("const toolLabel = _batchFriendlyToolLabel(toolType);", content)
+        self.assertIn("unified_audit: 'Full SEO Audit'", main_js)
+        self.assertIn("replace(/-/g, '_')", main_js)
+        self.assertIn("PENDING: 'В очереди'", main_js)
+        self.assertIn("RUNNING: 'В работе'", main_js)
+        self.assertIn("SUCCESS: 'Готово'", main_js)
+        self.assertIn("FAILURE: 'Ошибка'", main_js)
+        self.assertIn("const cwvEntry = toolResults.cwv || toolResults.core_web_vitals || {}", main_js)
+        self.assertIn("function _batchRenderSuccessDetails(item, toolType)", batch_js)
+        self.assertIn("if (t.includes('robots')) {", batch_js)
+        self.assertIn("title: `Batch ${_batchFriendlyToolLabel(toolType)}`", batch_js)
+        self.assertIn('/static/js/task-progress-batch.js?v={{ app_version }}-{{ task_id }}', template)
 
     def test_history_has_friendly_unified_label(self):
         js_path = Path(__file__).resolve().parents[1] / "app" / "static" / "js" / "history.js"
