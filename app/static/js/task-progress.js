@@ -431,35 +431,37 @@ function _formatHeartbeatAge(value) {
     return `${hours} ч назад`;
 }
 
+const TASK_TYPE_LABELS = {
+    unified_audit: 'Full SEO Audit',
+    robots_check: 'Robots.txt',
+    sitemap_validate: 'Sitemap',
+    bot_check: 'Bot Checker',
+    mobile_check: 'Mobile Audit',
+    render_audit: 'Render Audit',
+    site_audit_pro: 'Site Audit Pro',
+    onpage_audit: 'OnPage Audit',
+    clusterizer: 'Clusterizer',
+    redirect_checker: 'Redirect Checker',
+    core_web_vitals: 'Core Web Vitals',
+    link_profile_audit: 'Link Profile',
+    site_analyze: 'Site Analyze',
+};
+
+const TASK_STATUS_LABELS = {
+    PENDING: 'В очереди',
+    RUNNING: 'В работе',
+    SUCCESS: 'Готово',
+    FAILURE: 'Ошибка',
+};
+
 function _formatTaskType(taskType) {
     const value = String(taskType || '').trim().toLowerCase().replace(/-/g, '_');
-    const labels = {
-        unified_audit: 'Full SEO Audit',
-        robots_check: 'Robots.txt',
-        sitemap_validate: 'Sitemap',
-        bot_check: 'Bot Checker',
-        mobile_check: 'Mobile Audit',
-        render_audit: 'Render Audit',
-        site_audit_pro: 'Site Audit Pro',
-        onpage_audit: 'OnPage Audit',
-        clusterizer: 'Clusterizer',
-        redirect_checker: 'Redirect Checker',
-        core_web_vitals: 'Core Web Vitals',
-        link_profile_audit: 'Link Profile',
-        site_analyze: 'Site Analyze',
-    };
-    return labels[value] || taskType || '-';
+    return TASK_TYPE_LABELS[value] || taskType || '-';
 }
 
 function _formatTaskStatus(status) {
     const value = String(status || '').trim().toUpperCase();
-    const labels = {
-        PENDING: 'В очереди',
-        RUNNING: 'В работе',
-        SUCCESS: 'Готово',
-        FAILURE: 'Ошибка',
-    };
-    return labels[value] || value || '-';
+    return TASK_STATUS_LABELS[value] || value || '-';
 }
 
 function _computeExecutionStats(data, elapsedMs) {
