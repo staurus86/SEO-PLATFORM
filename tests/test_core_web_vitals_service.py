@@ -104,8 +104,63 @@ class CoreWebVitalsServiceTests(unittest.TestCase):
     @patch("app.tools.core_web_vitals.service_v1.requests.get")
     def test_raises_on_api_error(self, mock_get):
         mock_get.return_value = _FakeResponse(429, {"error": {"message": "quota exceeded"}})
-        with self.assertRaises(RuntimeError):
+        with self.assertRaises(RuntimeError) as ctx:
             run_core_web_vitals(url="https://example.com", strategy="desktop")
+        self.assertIn("лимита API", str(ctx.exception))
+
+    @patch("app.tools.core_web_vitals.service_v1.requests.get")
+    def test_retries_after_retryable_psi_document_timeout_error(self, mock_get):
+        payload = {
+            "lighthouseResult": {
+                "categories": {"performance": {"score": 0.91}},
+                "audits": {
+                    "largest-contentful-paint": {"numericValue": 1900},
+                    "interaction-to-next-paint": {"numericValue": 120},
+                    "cumulative-layout-shift": {"numericValue": 0.04},
+                    "first-contentful-paint": {"numericValue": 1100},
+                    "server-response-time": {"numericValue": 420},
+                },
+            },
+            "loadingExperience": {"metrics": {}},
+        }
+        mock_get.side_effect = [
+            _FakeResponse(
+                400,
+                {
+                    "error": {
+                        "message": (
+                            "Lighthouse returned error: FAILED_DOCUMENT_REQUEST. "
+                            "Make sure you are testing the correct URL. (Details: net::ERR_TIMED_OUT)"
+                        )
+                    }
+                },
+            ),
+            _FakeResponse(200, payload),
+        ]
+
+        result = run_core_web_vitals(url="example.com", strategy="desktop")
+        r = result.get("results", {})
+        self.assertEqual((r.get("summary") or {}).get("performance_score"), 91)
+        self.assertGreaterEqual((r.get("api") or {}).get("retries_used", 0), 1)
+
+    @patch("app.tools.core_web_vitals.service_v1.requests.get")
+    def test_humanizes_document_timeout_error(self, mock_get):
+        mock_get.return_value = _FakeResponse(
+            400,
+            {
+                "error": {
+                    "message": (
+                        "Lighthouse returned error: FAILED_DOCUMENT_REQUEST. "
+                        "Make sure you are testing the correct URL. (Details: net::ERR_TIMED_OUT)"
+                    )
+                }
+            },
+        )
+
+        with self.assertRaises(RuntimeError) as ctx:
+            run_core_web_vitals(url="https://example.com", strategy="desktop")
+
+        self.assertIn("не смог загрузить страницу", str(ctx.exception))
 
 
 if __name__ == "__main__":

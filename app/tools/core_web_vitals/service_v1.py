@@ -35,6 +35,38 @@ def _normalize_strategy(value: str) -> str:
     return token if token in {"mobile", "desktop"} else "desktop"
 
 
+def _extract_psi_error_text(response: requests.Response) -> str:
+    try:
+        payload = response.json()
+        return str((payload.get("error") or {}).get("message") or "").strip()
+    except Exception:
+        return str(getattr(response, "text", "") or "")[:300].strip()
+
+
+def _is_retryable_psi_error(status_code: int, error_text: str) -> bool:
+    text = str(error_text or "").upper()
+    if status_code in (500, 502, 503, 504):
+        return True
+    if status_code == 400 and ("FAILED_DOCUMENT_REQUEST" in text or "ERR_TIMED_OUT" in text):
+        return True
+    return False
+
+
+def _humanize_psi_error(status_code: int, error_text: str) -> str:
+    text = str(error_text or "").strip()
+    text_upper = text.upper()
+    if "FAILED_DOCUMENT_REQUEST" in text_upper or "ERR_TIMED_OUT" in text_upper:
+        return (
+            "PageSpeed Insights не смог загрузить страницу: целевой сайт не ответил вовремя для Lighthouse. "
+            "Проверьте, что URL открывается извне без долгой задержки, сервер не блокирует Google/PageSpeed и страница не зависает на редиректах."
+        )
+    if status_code == 429:
+        return "PageSpeed Insights временно отклонил запрос из-за лимита API. Повторите позже."
+    if text:
+        return f"PSI API error ({status_code}): {text}"
+    return f"PSI API error ({status_code}): unknown error"
+
+
 def _metric_status(metric: str, value: Optional[float]) -> str:
     if value is None:
         return "unknown"
@@ -458,7 +490,8 @@ def run_core_web_vitals(
                 timeout=(10, read_timeout),
                 **proxy_kwargs,
             )
-            if response.status_code in (500, 502, 503, 504) and attempt < (max_retries - 1):
+            error_text = _extract_psi_error_text(response) if response.status_code != 200 else ""
+            if _is_retryable_psi_error(response.status_code, error_text) and attempt < (max_retries - 1):
                 retries_used += 1
                 time.sleep(min(2.0, 0.35 * (2 ** attempt)))
                 continue
@@ -481,13 +514,8 @@ def run_core_web_vitals(
         )
 
     if response.status_code != 200:
-        error_text = ""
-        try:
-            payload = response.json()
-            error_text = str((payload.get("error") or {}).get("message") or "")
-        except Exception:
-            error_text = response.text[:300]
-        raise RuntimeError(f"PSI API error ({response.status_code}): {error_text or 'unknown error'}")
+        error_text = _extract_psi_error_text(response)
+        raise RuntimeError(_humanize_psi_error(response.status_code, error_text))
 
     try:
         data = response.json()
