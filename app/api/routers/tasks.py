@@ -361,12 +361,22 @@ async def cleanup_memory(request: Request, aggressive: bool = True):
 
 @router.post("/maintenance/run")
 async def run_maintenance_now(request: Request, days: Optional[int] = None, force_gc: bool = True):
-    """Run consolidated maintenance routine used by the standalone maintenance script."""
+    """Run consolidated maintenance routine without relying on script imports."""
     require_ops_access(request)
-    from scripts.run_maintenance import run_maintenance
+    from app.core.memory_guard import run_memory_cleanup_now
+    from app.core.task_cleanup import prune_stale_report_artifacts
+    from app.tools.llmCrawler.queue import cleanup_expired_jobs
 
-    summary = run_maintenance(
-        stale_days=max(1, int(days or 7)),
-        force_gc=bool(force_gc),
-    )
-    return summary
+    stale_days = max(1, int(days or 7))
+    artifacts = prune_stale_report_artifacts(max_age_days=stale_days)
+    cleanup_expired_jobs()
+    memory = run_memory_cleanup_now(force_gc=bool(force_gc))
+    heartbeat = get_worker_heartbeat()
+    queue_size = queue_depth()
+    return {
+        "status": "SUCCESS",
+        "artifacts": artifacts,
+        "memory": memory,
+        "llm_queue_depth": queue_size,
+        "llm_worker_heartbeat": heartbeat,
+    }

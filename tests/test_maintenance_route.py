@@ -19,8 +19,12 @@ class MaintenanceRouteTests(unittest.IsolatedAsyncioTestCase):
             "llm_worker_heartbeat": {"updatedAt": "2026-03-23T12:00:00+00:00"},
         }
 
-        with patch("scripts.run_maintenance.run_maintenance", return_value=fake_summary) as run_mock:
+        with patch("app.core.task_cleanup.prune_stale_report_artifacts", return_value=fake_summary["artifacts"]), \
+             patch("app.tools.llmCrawler.queue.cleanup_expired_jobs") as cleanup_jobs_mock, \
+             patch("app.core.memory_guard.run_memory_cleanup_now", return_value=fake_summary["memory"]), \
+             patch("app.api.routers.tasks.queue_depth", return_value=fake_summary["llm_queue_depth"]), \
+             patch("app.api.routers.tasks.get_worker_heartbeat", return_value=fake_summary["llm_worker_heartbeat"]):
             payload = await run_maintenance_now(_request(), days=9, force_gc=False)
 
-        run_mock.assert_called_once_with(stale_days=9, force_gc=False)
+        cleanup_jobs_mock.assert_called_once()
         self.assertEqual(payload, fake_summary)
