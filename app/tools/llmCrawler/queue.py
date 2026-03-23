@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 import gzip
 import base64
+import threading
 
 try:
     import redis  # type: ignore
@@ -15,16 +16,52 @@ except Exception:  # pragma: no cover - environment dependent
     redis = None
 
 from app.config import settings
+from app.core.ops_observability import (
+    record_llm_job_completed,
+    record_llm_job_started,
+    record_llm_result_size,
+)
 
 
 _redis_client: Optional[Any] = None
 _redis_retry_after_ts: float = 0.0
 _mem_jobs: Dict[str, Dict[str, Any]] = {}
 _mem_queue: list[Dict[str, Any]] = []
+_stats_lock = threading.RLock()
+_compaction_stats: Dict[str, Any] = {
+    "compactions_total": 0,
+    "original_bytes_total": 0,
+    "stored_bytes_total": 0,
+    "bytes_saved_total": 0,
+    "last_compacted_at": None,
+}
 
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _estimate_bytes(payload: Any) -> int:
+    try:
+        return len(json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8"))
+    except Exception:
+        return 0
+
+
+def _record_compaction(*, original_size: int, compacted_size: int) -> None:
+    with _stats_lock:
+        _compaction_stats["compactions_total"] = int(_compaction_stats["compactions_total"]) + 1
+        _compaction_stats["original_bytes_total"] = int(_compaction_stats["original_bytes_total"]) + int(original_size)
+        _compaction_stats["stored_bytes_total"] = int(_compaction_stats["stored_bytes_total"]) + int(compacted_size)
+        _compaction_stats["bytes_saved_total"] = int(_compaction_stats["bytes_saved_total"]) + max(0, int(original_size) - int(compacted_size))
+        _compaction_stats["last_compacted_at"] = _utc_now()
+
+
+def get_compaction_stats() -> Dict[str, Any]:
+    with _stats_lock:
+        stats = dict(_compaction_stats)
+    stats["max_job_bytes"] = _max_job_bytes()
+    return stats
 
 
 def get_redis_client() -> Optional[Any]:
@@ -119,9 +156,11 @@ def _maybe_decompress_result(job: Dict[str, Any]) -> Dict[str, Any]:
 
 def _truncate_heavy_fields(job: Dict[str, Any]) -> Dict[str, Any]:
     # remove overly large text blobs to respect max size
+    original_size = _estimate_bytes(job)
     result = job.get("result")
     if not isinstance(result, dict):
         return job
+    mutated = False
     snapshots = []
     for key in ("nojs", "rendered"):
         snap = result.get(key)
@@ -132,10 +171,11 @@ def _truncate_heavy_fields(job: Dict[str, Any]) -> Dict[str, Any]:
         for field in ("readability_text", "trafilatura_text", "main_text_preview"):
             if field in content and isinstance(content[field], str) and len(content[field]) > 200_000:
                 content[field] = content[field][:200_000]
+                mutated = True
         if not bool((result.get("options") or {}).get("include_raw_html", False)):
-            snap.pop("raw_html", None)
+            mutated = snap.pop("raw_html", None) is not None or mutated
         if not bool((result.get("options") or {}).get("include_rendered_html", False)):
-            snap.pop("rendered_html", None)
+            mutated = snap.pop("rendered_html", None) is not None or mutated
     for key, limit in (
         ("content_segments", 20),
         ("segment_tree", 30),
@@ -147,6 +187,7 @@ def _truncate_heavy_fields(job: Dict[str, Any]) -> Dict[str, Any]:
         if isinstance(items, list) and len(items) > limit:
             result[key] = items[:limit]
             result.setdefault("storage_meta", {})[f"{key}_omitted"] = len(items) - limit
+            mutated = True
     segmentation = result.get("segmentation")
     if isinstance(segmentation, dict):
         for key, limit in (
@@ -159,6 +200,7 @@ def _truncate_heavy_fields(job: Dict[str, Any]) -> Dict[str, Any]:
             if isinstance(items, list) and len(items) > limit:
                 segmentation[key] = items[:limit]
                 result.setdefault("storage_meta", {})[f"segmentation_{key}_omitted"] = len(items) - limit
+                mutated = True
     recommendation_diagnostics = result.get("recommendation_diagnostics")
     if isinstance(recommendation_diagnostics, dict):
         for key, limit in (("strengths", 10), ("warnings", 10), ("actions", 10)):
@@ -166,7 +208,11 @@ def _truncate_heavy_fields(job: Dict[str, Any]) -> Dict[str, Any]:
             if isinstance(items, list) and len(items) > limit:
                 recommendation_diagnostics[key] = items[:limit]
                 result.setdefault("storage_meta", {})[f"recommendation_diagnostics_{key}_omitted"] = len(items) - limit
+                mutated = True
     job["result"] = result
+    if mutated:
+        compacted_size = _estimate_bytes(job)
+        _record_compaction(original_size=original_size, compacted_size=compacted_size)
     return job
 
 
@@ -203,6 +249,7 @@ def save_job_record(job: Dict[str, Any]) -> None:
     client = get_redis_client()
     payload = dict(job)
     payload["updatedAt"] = _utc_now()
+    original_result_size = _estimate_bytes(payload.get("result"))
     payload = _truncate_heavy_fields(payload)
     payload = _maybe_compress_result(payload)
     try:
@@ -214,6 +261,8 @@ def save_job_record(job: Dict[str, Any]) -> None:
             raw = json.dumps(payload)
     except Exception:
         raw = json.dumps(payload)
+    if payload.get("result") is not None or original_result_size > 0:
+        record_llm_result_size(original_result_size, _estimate_bytes(payload.get("result")))
     if not client:
         _mem_jobs[str(job.get("jobId") or "")] = payload
         return
@@ -236,19 +285,28 @@ def get_job_record(job_id: str) -> Optional[Dict[str, Any]]:
 
 
 def update_job_record(job_id: str, **fields: Any) -> Dict[str, Any]:
-    current = get_job_record(job_id) or {
+    existing = get_job_record(job_id) or {
         "jobId": job_id,
         "status": "queued",
         "progress": 0,
         "createdAt": _utc_now(),
         "updatedAt": _utc_now(),
     }
+    current = dict(existing)
     current.update(fields)
     if "progress" in current:
         try:
             current["progress"] = max(0, min(100, int(current["progress"])))
         except Exception:
             current["progress"] = 0
+    previous_status = str(existing.get("status") or "").lower()
+    next_status = str(current.get("status") or "").lower()
+    if next_status == "running" and previous_status != "running":
+        started_at = str(current.get("startedAt") or _utc_now())
+        current["startedAt"] = started_at
+        record_llm_job_started(current.get("createdAt"), started_at)
+    if next_status in {"done", "error"} and previous_status not in {"done", "error"}:
+        record_llm_job_completed(current.get("createdAt"), current.get("startedAt"), int(current.get("duration_ms") or 0))
     save_job_record(current)
     return current
 

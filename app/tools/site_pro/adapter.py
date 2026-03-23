@@ -14,13 +14,10 @@ from urllib.parse import parse_qs, urljoin, urldefrag, urlparse
 import requests
 from bs4 import BeautifulSoup
 
-from app.tools.http_text import decode_response_text
-
 from .schema import (
     NormalizedSiteAuditPayload,
     SiteAuditProIssue,
     NormalizedSiteAuditRow,
-    SiteAuditProSummary,
 )
 
 from .constants import FILLER_WORDS, WEAK_ANCHORS
@@ -51,10 +48,8 @@ from .content_checks import (
     _detect_trust_badges,
     _extract_hidden_content_signals,
     _h_hierarchy_summary,
-    _hamming64,
     _heading_distribution,
     _semantic_tags_count,
-    _simhash64,
     _unique_percent,
     _validate_structured_common,
 )
@@ -63,12 +58,22 @@ from .ai_detection import (
     _classify_page_type,
     _detect_ai_markers,
 )
-from .graph_algorithms import (
-    _apply_linking_scores,
-    _build_semantic_linking_map,
-    _compute_pagerank,
-    _compute_tfidf_scores,
+from .canonical_hreflang import apply_canonical_and_hreflang_checks, extract_hreflang_data
+from .artifacts_payload import build_artifacts_payload
+from .crawl_stage import build_crawl_page_failure, build_crawl_page_success
+from .duplicates_postprocess import apply_duplicate_and_depth_signals, apply_near_duplicate_signals
+from .graph_postprocess import enrich_graph_metrics
+from .health_scoring import calculate_site_health_scores
+from .media_link_analysis import (
+    apply_broken_link_issues,
+    apply_image_analysis_issues,
+    build_broken_links_data,
+    build_image_analysis_data,
 )
+from .crawl_state import record_page_state
+from .signals_stage import apply_homepage_security_signals, apply_orphan_page_signals, find_homepage_row
+from .postprocess import build_summary, finalize_rows
+from .public_results import build_public_results
 
 
 class SiteAuditProAdapter:
@@ -129,26 +134,7 @@ class SiteAuditProAdapter:
         return "invalid"
 
     def _extract_hreflang_data(self, soup: BeautifulSoup, page_url: str) -> Tuple[List[str], Dict[str, str], bool]:
-        langs: List[str] = []
-        targets: Dict[str, str] = {}
-        has_x_default = False
-        for tag in soup.find_all("link", href=True):
-            rel = [str(x).lower() for x in (tag.get("rel") or [])]
-            if "alternate" not in rel:
-                continue
-            lang = str(tag.get("hreflang") or "").strip()
-            if not lang:
-                continue
-            href = str(tag.get("href") or "").strip()
-            if not href:
-                continue
-            lang_lower = lang.lower()
-            normalized_target = self._normalize_url(urljoin(page_url, href))
-            langs.append(lang_lower)
-            targets[lang_lower] = normalized_target
-            if lang_lower == "x-default":
-                has_x_default = True
-        return langs, targets, has_x_default
+        return extract_hreflang_data(soup=soup, page_url=page_url, normalize_url=self._normalize_url)
 
     def _apply_canonical_and_hreflang_checks(
         self,
@@ -157,108 +143,12 @@ class SiteAuditProAdapter:
         start_url: str,
         extended_hreflang_checks: bool,
     ) -> None:
-        row_by_url: Dict[str, NormalizedSiteAuditRow] = {}
-        for r in rows:
-            row_by_url[self._normalize_url(r.url)] = r
-            if r.final_url:
-                row_by_url[self._normalize_url(r.final_url)] = r
-
-        for row in rows:
-            canonical_raw = (row.canonical or "").strip()
-            if canonical_raw:
-                canonical_target = self._normalize_url(urljoin(row.url, canonical_raw))
-                target = row_by_url.get(canonical_target)
-                if target:
-                    row.canonical_target_status = target.status_code
-                    row.canonical_target_indexable = target.indexable
-                    target_status = int(target.status_code or 0)
-                    target_robots = (target.meta_robots or "").lower()
-                    if target_status >= 400:
-                        row.canonical_conflict = "canonical_target_4xx_5xx"
-                        row.issues.append(
-                            SiteAuditProIssue(
-                                severity="critical",
-                                code="canonical_target_error_status",
-                                title="Canonical points to an error page",
-                                details=f"Canonical target status: {target_status}",
-                            )
-                        )
-                    elif 300 <= target_status < 400:
-                        row.canonical_conflict = "canonical_target_redirect"
-                        row.issues.append(
-                            SiteAuditProIssue(
-                                severity="warning",
-                                code="canonical_target_redirect",
-                                title="Canonical points to a redirect URL",
-                                details=f"Canonical target status: {target_status}",
-                            )
-                        )
-                    elif "noindex" in target_robots:
-                        row.canonical_conflict = "canonical_target_noindex"
-                        row.issues.append(
-                            SiteAuditProIssue(
-                                severity="warning",
-                                code="canonical_target_noindex",
-                                title="Canonical points to a noindex page",
-                            )
-                        )
-
-            robots = (row.meta_robots or "").lower()
-            if "noindex" in robots and (row.canonical_status or "").lower() in ("self", "other"):
-                row.canonical_conflict = row.canonical_conflict or "noindex_with_canonical"
-                row.issues.append(
-                    SiteAuditProIssue(
-                        severity="warning",
-                        code="noindex_canonical_conflict",
-                        title="Page has both canonical and noindex",
-                    )
-                )
-
-        if not extended_hreflang_checks:
-            return
-
-        lang_re = re.compile(r"^[a-z]{2}(?:-[a-z]{2})?$|^x-default$", re.I)
-        for row in rows:
-            langs = list(row.hreflang_langs or [])
-            targets = dict(row.hreflang_targets or {})
-            if not langs:
-                continue
-
-            seen_langs: Set[str] = set()
-            for lang in langs:
-                if lang in seen_langs:
-                    row.hreflang_issues.append(f"duplicate_lang:{lang}")
-                    continue
-                seen_langs.add(lang)
-                if not lang_re.match(lang):
-                    row.hreflang_issues.append(f"invalid_lang_code:{lang}")
-
-            if len(langs) > 1 and not row.hreflang_has_x_default:
-                row.hreflang_issues.append("missing_x_default")
-
-            row_norm = self._normalize_url(row.final_url or row.url)
-            for lang, target_url in targets.items():
-                target_row = row_by_url.get(self._normalize_url(target_url))
-                if not target_row:
-                    row.hreflang_issues.append(f"target_not_scanned:{lang}")
-                    continue
-                back_targets = {
-                    self._normalize_url(x)
-                    for x in (target_row.hreflang_targets or {}).values()
-                    if x
-                }
-                if row_norm not in back_targets:
-                    row.hreflang_issues.append(f"missing_reciprocal:{lang}")
-
-            for item in row.hreflang_issues[:15]:
-                row.issues.append(
-                    SiteAuditProIssue(
-                        severity="warning",
-                        code="hreflang_extended_check",
-                        title="Extended hreflang check warning",
-                        details=item,
-                    )
-                )
+        _ = start_url
+        apply_canonical_and_hreflang_checks(
+            rows=rows,
+            extended_hreflang_checks=extended_hreflang_checks,
+            normalize_url=self._normalize_url,
+        )
 
     def _extract_all_links(
         self, page_url: str, soup: BeautifulSoup, base_host: str,
@@ -1150,81 +1040,7 @@ class SiteAuditProAdapter:
         return row, internal_links, body_text, weak_anchor_count, anchor_total
 
     def _calculate_site_health_scores(self, rows: List[NormalizedSiteAuditRow], incoming_counts: Counter) -> None:
-        if not rows:
-            return
-        for row in rows:
-            score = 0.0
-            if row.indexable:
-                score += 20.0
-
-            score += 5.0 if row.is_https else 0.0
-            score += 5.0 if row.mobile_friendly_hint else 0.0
-            score += 4.0 if row.compression_enabled else 0.0
-            score += 4.0 if row.cache_control else 0.0
-            if row.canonical_status == "self":
-                score += 4.0
-            elif row.canonical_status == "other":
-                score += 2.0
-            elif row.canonical_status == "external":
-                score += 1.0
-            score += min(6.0, float(row.html_quality_score or 0.0) / 100.0 * 6.0)
-            if row.response_time_ms is not None and row.response_time_ms <= 800:
-                score += 4.0
-            elif row.response_time_ms <= 1500:
-                score += 2.0
-            elif row.response_time_ms <= 3000:
-                score += 1.0
-            score += 2.0 if int(row.structured_data or 0) > 0 else 0.0
-
-            words = int(row.word_count or 0)
-            score += 10.0 if words >= 300 else (words / 300.0) * 10.0
-            score += min(8.0, float(row.unique_percent or 0.0) / 100.0 * 8.0)
-            score += min(5.0, float(row.readability_score or 0.0) / 100.0 * 5.0)
-            tox = float(row.toxicity_score or 0.0)
-            if tox <= 20:
-                score += 4.0
-            elif tox <= 40:
-                score += 2.0
-            elif tox <= 60:
-                score += 1.0
-            freshness = row.content_freshness_days
-            if freshness is not None:
-                if freshness <= 180:
-                    score += 3.0
-                elif freshness <= 365:
-                    score += 2.0
-                elif freshness <= 730:
-                    score += 1.0
-
-            title_len = int(row.title_len or 0)
-            if 40 <= title_len <= 65:
-                score += 5.0
-            elif 25 <= title_len <= 75:
-                score += 3.0
-            desc_len = int(row.description_len or 0)
-            if 80 <= desc_len <= 160:
-                score += 3.0
-            elif 50 <= desc_len <= 200:
-                score += 1.0
-            if int(row.h1_count or 0) == 1:
-                score += 2.0
-
-            no_alt = int(row.images_no_alt or 0)
-            score += max(0.0, 2.0 - no_alt * 0.4)
-
-            incoming = int(incoming_counts.get(row.url, 0))
-            score += min(6.0, incoming * 1.5)
-            if not row.orphan_page:
-                score += 2.0
-            if int(row.outgoing_internal_links or 0) > 0:
-                score += 2.0
-
-            if int(row.duplicate_title_count or 0) > 1:
-                score -= 2.0
-            if int(row.duplicate_description_count or 0) > 1:
-                score -= 1.0
-
-            row.health_score = round(max(0.0, min(100.0, score)), 1)
+        calculate_site_health_scores(rows=rows, incoming_counts=incoming_counts)
 
     def run(
         self,
@@ -1285,13 +1101,8 @@ class SiteAuditProAdapter:
         all_image_urls: Dict[str, Set[str]] = defaultdict(set)
         all_image_urls_global: Set[str] = set()
 
-        session = requests.Session()
-        session.headers.update({"User-Agent": "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)"})
-        if use_proxy:
-            from app.proxy import get_requests_proxies
-            _proxies = get_requests_proxies()
-            if _proxies:
-                session.proxies.update(_proxies)
+        from .network import build_session
+        session = build_session(use_proxy)
         total_target = len(prepared_batch_urls) if effective_batch_mode else page_limit
         total_target = max(1, total_target)
 
@@ -1305,80 +1116,46 @@ class SiteAuditProAdapter:
 
             try:
                 response = session.get(current, timeout=timeout, allow_redirects=True)
-                raw_html = decode_response_text(response)
-                final_url = self._normalize_url(response.url or current)
-                reason = str(getattr(response, "reason", "") or "").strip()
-                status_line = f"{response.status_code} {reason}".strip()
-                response_time_ms = int(
-                    max(
-                        0.0,
-                        float(getattr(getattr(response, "elapsed", None), "total_seconds", lambda: 0.0)()) * 1000.0,
-                    )
-                )
-                html_size_bytes = len((raw_html or "").encode("utf-8", errors="ignore"))
-                row, links, page_text, weak_anchor_count, anchor_total = self._build_row(
-                    source_url=current,
-                    final_url=final_url,
-                    status_code=response.status_code,
-                    status_line=status_line,
-                    html=raw_html or "",
+                page_result = build_crawl_page_success(
+                    current_url=current,
+                    response=response,
+                    timeout=timeout,
                     base_host=base_host,
-                    headers=dict(getattr(response, "headers", {}) or {}),
-                    response_time_ms=response_time_ms,
-                    redirect_count=len(getattr(response, "history", []) or []),
-                    html_size_bytes=html_size_bytes,
                     detailed_checks=(selected_mode == "full"),
+                    normalize_url=self._normalize_url,
+                    build_row=self._build_row,
+                    extract_all_links=self._extract_all_links,
+                    extract_image_urls=self._extract_image_urls,
                 )
+                row = page_result.row
                 rows.append(row)
-                depth_by_url[self._normalize_url(row.url)] = min(depth_by_url.get(self._normalize_url(row.url), current_depth), current_depth)
-                depth_by_url[self._normalize_url(final_url)] = min(depth_by_url.get(self._normalize_url(final_url), current_depth), current_depth)
-                if row.title:
-                    normalized_title = row.title.strip().lower()
-                    titles_by_url[row.url] = normalized_title
-                    title_counter[normalized_title] += 1
-                if row.meta_description:
-                    normalized_desc = row.meta_description.strip().lower()
-                    descriptions_by_url[row.url] = normalized_desc
-                    desc_counter[normalized_desc] += 1
-                page_texts[row.url] = page_text
-                anchor_quality_raw[row.url] = (weak_anchor_count, anchor_total)
-                link_graph[row.url] = set(links)
-                for link in links:
-                    incoming_counts[link] += 1
-                    link_norm = self._normalize_url(link)
-                    if link_norm not in depth_by_url:
-                        depth_by_url[link_norm] = current_depth + 1
-                    if (not effective_batch_mode) and link not in visited and len(visited) + len(queue) < page_limit * 2:
-                        queue.append(link)
+                from .crawl_state import record_page_state
 
-                # Collect links and images for post-crawl analysis
-                _page_soup = BeautifulSoup(raw_html or "", "html.parser")
-                _int_links, _ext_links = self._extract_all_links(final_url, _page_soup, base_host)
-                for _lnk in _int_links + _ext_links:
-                    all_discovered_links[_lnk].add(current)
-                _img_urls = self._extract_image_urls(final_url, _page_soup)
-                for _img in _img_urls:
-                    all_image_urls[current].add(_img)
-                    all_image_urls_global.add(_img)
+                record_page_state(
+                    row=row,
+                    page_result=page_result,
+                    current_depth=current_depth,
+                    page_limit=page_limit,
+                    effective_batch_mode=effective_batch_mode,
+                    visited=visited,
+                    queue=queue,
+                    depth_by_url=depth_by_url,
+                    incoming_counts=incoming_counts,
+                    link_graph=link_graph,
+                    titles_by_url=titles_by_url,
+                    descriptions_by_url=descriptions_by_url,
+                    title_counter=title_counter,
+                    desc_counter=desc_counter,
+                    page_texts=page_texts,
+                    anchor_quality_raw=anchor_quality_raw,
+                    all_discovered_links=all_discovered_links,
+                    all_image_urls=all_image_urls,
+                    all_image_urls_global=all_image_urls_global,
+                    normalize_url=self._normalize_url,
+                )
             except Exception as exc:
                 crawl_errors.append(f"{current}: {exc}")
-                rows.append(
-                    NormalizedSiteAuditRow(
-                        url=current,
-                        status_code=None,
-                        status_line=None,
-                        indexable=False,
-                        health_score=0.0,
-                        issues=[
-                            SiteAuditProIssue(
-                                severity="critical",
-                                code="request_failed",
-                                title="Failed to fetch page",
-                                details=str(exc),
-                            )
-                        ],
-                    )
-                )
+                rows.append(build_crawl_page_failure(current_url=current, error=exc))
                 link_graph[current] = set()
                 page_texts[current] = ""
                 anchor_quality_raw[current] = (0, 0)
@@ -1409,21 +1186,10 @@ class SiteAuditProAdapter:
         notify(72, "Checking links for broken URLs…")
         link_check_results = self._check_links_batch(links_to_check, session) if links_to_check else []
 
-        broken_items = []
-        redirected_items = []
-        for item in link_check_results:
-            if item.get("is_broken"):
-                found_on = sorted(all_discovered_links.get(item["url"], set()))[:10]
-                broken_items.append({**item, "found_on": found_on})
-            elif item.get("redirect_url"):
-                redirected_items.append(item)
-
-        broken_links_data: Dict[str, Any] = {
-            "total_checked": len(link_check_results),
-            "broken_count": len(broken_items),
-            "broken": broken_items[:200],
-            "redirected": redirected_items[:200],
-        }
+        broken_links_data = build_broken_links_data(
+            link_check_results=link_check_results,
+            all_discovered_links=all_discovered_links,
+        )
         if broken_links_note:
             broken_links_data["note"] = broken_links_note
 
@@ -1435,160 +1201,34 @@ class SiteAuditProAdapter:
         notify(78, "Analyzing images…")
         image_check_results = self._check_images_batch(images_sample, session) if images_sample else []
 
-        format_counts: Dict[str, int] = {"jpeg": 0, "png": 0, "webp": 0, "avif": 0, "svg": 0, "gif": 0, "other": 0}
-        large_images: List[Dict[str, Any]] = []
-        total_size = 0
-        for img_result in image_check_results:
-            fmt = img_result.get("format", "other")
-            if fmt in format_counts:
-                format_counts[fmt] += 1
-            else:
-                format_counts["other"] += 1
-            sz = int(img_result.get("size_bytes") or 0)
-            total_size += sz
-            if sz > 200 * 1024:
-                large_images.append(img_result)
-
-        checked_count = len(image_check_results)
-        modern_count = format_counts["webp"] + format_counts["avif"] + format_counts["svg"]
-        modern_format_pct = round((modern_count / max(1, checked_count)) * 100.0, 1)
-        legacy_count = format_counts["jpeg"] + format_counts["png"] + format_counts["gif"]
-
-        image_analysis_data: Dict[str, Any] = {
-            "total_images": total_images_found,
-            "checked": checked_count,
-            "formats": format_counts,
-            "modern_format_pct": modern_format_pct,
-            "large_images": sorted(large_images, key=lambda x: x.get("size_bytes", 0), reverse=True)[:50],
-            "missing_modern_format": legacy_count,
-            "total_size_bytes": total_size,
-            "avg_size_bytes": round(total_size / max(1, checked_count)),
-        }
-
-        # Add image-related issues to the first (homepage) row
-        _issue_target = rows[0] if rows else None
-        if _issue_target and checked_count > 0:
-            if modern_format_pct < 50.0:
-                _issue_target.issues.append(
-                    SiteAuditProIssue(
-                        severity="warning",
-                        code="low_modern_image_formats_site",
-                        title="Most images use legacy formats (JPEG/PNG). Consider WebP/AVIF.",
-                        details=f"Modern format: {modern_format_pct}% ({modern_count}/{checked_count})",
-                    )
-                )
-            very_large = [img for img in large_images if int(img.get("size_bytes") or 0) > 1024 * 1024]
-            large_over_500k = [img for img in large_images if int(img.get("size_bytes") or 0) > 500 * 1024]
-            if very_large:
-                _issue_target.issues.append(
-                    SiteAuditProIssue(
-                        severity="critical",
-                        code="very_large_images",
-                        title="Very large images found — significantly impacts page speed",
-                        details=f"{len(very_large)} images over 1MB",
-                    )
-                )
-            elif large_over_500k:
-                _issue_target.issues.append(
-                    SiteAuditProIssue(
-                        severity="warning",
-                        code="large_images",
-                        title=f"Large images found ({len(large_over_500k)}) — optimize for faster loading",
-                        details=f"{len(large_over_500k)} images over 500KB",
-                    )
-                )
-
-        # Add broken link issues to rows where broken links were found
-        if broken_items:
-            broken_urls_set = {item["url"] for item in broken_items}
-            for row in rows:
-                # Check both internal links (link_graph) and all discovered links from this page
-                page_internal = link_graph.get(row.url, set())
-                page_all = {lnk for lnk, sources in all_discovered_links.items() if row.url in sources}
-                broken_on_page = broken_urls_set & (page_internal | page_all)
-                if broken_on_page:
-                    row.issues.append(
-                        SiteAuditProIssue(
-                            severity="warning",
-                            code="broken_links_on_page",
-                            title=f"Page has {len(broken_on_page)} broken link(s)",
-                            details=", ".join(sorted(broken_on_page)[:5]),
-                        )
-                    )
+        image_analysis_data = build_image_analysis_data(
+            image_check_results=image_check_results,
+            total_images_found=total_images_found,
+        )
+        apply_image_analysis_issues(rows, image_analysis_data)
+        apply_broken_link_issues(
+            rows,
+            broken_links_data=broken_links_data,
+            link_graph=link_graph,
+            all_discovered_links=all_discovered_links,
+        )
 
         notify(82, "Analyzing duplicates and structure…")
 
-        duplicate_titles = {t for t, count in title_counter.items() if t and count > 1}
-        duplicate_desc = {t for t, count in desc_counter.items() if t and count > 1}
-        for row in rows:
-            row_title = titles_by_url.get(row.url, "")
-            row_desc = descriptions_by_url.get(row.url, "")
-            row.duplicate_title_count = title_counter.get(row_title, 0) if row_title else 0
-            row.duplicate_description_count = desc_counter.get(row_desc, 0) if row_desc else 0
-            if row_title in duplicate_titles:
-                row.issues.append(
-                    SiteAuditProIssue(
-                        severity="warning",
-                        code="duplicate_title",
-                        title="Duplicate title detected",
-                    )
-                )
-            if row_desc in duplicate_desc:
-                row.issues.append(
-                    SiteAuditProIssue(
-                        severity="warning",
-                        code="duplicate_meta_description",
-                        title="Duplicate meta description detected",
-                    )
-                )
-            row_norm = self._normalize_url(row.final_url or row.url)
-            row.click_depth = depth_by_url.get(row_norm, depth_by_url.get(self._normalize_url(row.url)))
-            if (selected_mode == "full") and (not effective_batch_mode) and row.click_depth is not None and row.click_depth > 3:
-                row.issues.append(
-                    SiteAuditProIssue(
-                        severity="warning",
-                        code="deep_click_depth",
-                        title="Page is too deep in click depth",
-                        details=f"Click depth: {row.click_depth}",
-                    )
-                )
+        apply_duplicate_and_depth_signals(
+            rows=rows,
+            titles_by_url=titles_by_url,
+            descriptions_by_url=descriptions_by_url,
+            title_counter=title_counter,
+            desc_counter=desc_counter,
+            depth_by_url=depth_by_url,
+            normalize_url=self._normalize_url,
+            selected_mode=selected_mode,
+            effective_batch_mode=effective_batch_mode,
+        )
 
-        start_norm = self._normalize_url(start_url)
-        homepage_row = None
-        for row in rows:
-            if self._normalize_url(row.url) == start_norm or self._normalize_url(row.final_url or "") == start_norm:
-                homepage_row = row
-                break
-        if homepage_row and (selected_mode == "full"):
-            if not homepage_row.csp_present:
-                homepage_row.issues.append(
-                    SiteAuditProIssue(severity="warning", code="security_missing_csp", title="Homepage missing CSP header")
-                )
-            if homepage_row.is_https and not homepage_row.hsts_present:
-                homepage_row.issues.append(
-                    SiteAuditProIssue(severity="warning", code="security_missing_hsts", title="Homepage missing HSTS header")
-                )
-            if not homepage_row.x_frame_options_present:
-                homepage_row.issues.append(
-                    SiteAuditProIssue(severity="info", code="security_missing_xfo", title="Homepage missing X-Frame-Options header")
-                )
-            if not homepage_row.referrer_policy_present:
-                homepage_row.issues.append(
-                    SiteAuditProIssue(severity="info", code="security_missing_referrer_policy", title="Homepage missing Referrer-Policy header")
-                )
-            if not homepage_row.permissions_policy_present:
-                homepage_row.issues.append(
-                    SiteAuditProIssue(severity="info", code="security_missing_permissions_policy", title="Homepage missing Permissions-Policy header")
-                )
-            if int(homepage_row.mixed_content_count or 0) > 0:
-                homepage_row.issues.append(
-                    SiteAuditProIssue(
-                        severity="warning",
-                        code="security_mixed_content_homepage",
-                        title="Homepage contains mixed content links",
-                        details=f"Mixed content refs: {homepage_row.mixed_content_count}",
-                    )
-                )
+        homepage_row = find_homepage_row(rows, start_url=start_url, normalize_url=self._normalize_url)
+        apply_homepage_security_signals(homepage_row, selected_mode=selected_mode)
 
         self._apply_canonical_and_hreflang_checks(
             rows=rows,
@@ -1596,170 +1236,33 @@ class SiteAuditProAdapter:
             extended_hreflang_checks=extended_hreflang_checks,
         )
 
-        simhash_by_url: Dict[str, int] = {}
-        row_by_url: Dict[str, NormalizedSiteAuditRow] = {}
-        for row in rows:
-            row_by_url[row.url] = row
-            text = page_texts.get(row.url, "")
-            if int(row.word_count or 0) < 80:
-                continue
-            simhash_by_url[row.url] = _simhash64(text)
+        apply_near_duplicate_signals(rows=rows, page_texts=page_texts)
 
-        near_dup_map: Dict[str, Set[str]] = defaultdict(set)
-        candidate_urls = list(simhash_by_url.keys())
-        for i in range(len(candidate_urls)):
-            u1 = candidate_urls[i]
-            h1 = simhash_by_url[u1]
-            for j in range(i + 1, len(candidate_urls)):
-                u2 = candidate_urls[j]
-                h2 = simhash_by_url[u2]
-                if _hamming64(h1, h2) <= 6:
-                    near_dup_map[u1].add(u2)
-                    near_dup_map[u2].add(u1)
-
-        for url_key, near_set in near_dup_map.items():
-            row = row_by_url.get(url_key)
-            if not row:
-                continue
-            row.near_duplicate_count = len(near_set)
-            row.near_duplicate_urls = sorted(near_set)[:10]
-            row.issues.append(
-                SiteAuditProIssue(
-                    severity="warning",
-                    code="near_duplicate_content",
-                    title="Near-duplicate content detected",
-                    details=f"Similar pages: {len(near_set)}",
-                )
-            )
-
-        all_urls = [r.url for r in rows]
-        allowed = set(all_urls)
-        normalized_graph: Dict[str, Set[str]] = {}
-        for u in all_urls:
-            normalized_graph[u] = {v for v in link_graph.get(u, set()) if v in allowed}
-
-        pagerank_scores = _compute_pagerank(normalized_graph)
-        tfidf_scores = _compute_tfidf_scores(page_texts, top_n=10)
-
-        for row in rows:
-            row.incoming_internal_links = int(incoming_counts.get(row.url, 0))
-            row.pagerank = pagerank_scores.get(row.url, 0.0)
-            row.tf_idf_keywords = tfidf_scores.get(row.url, {})
-            row.top_terms = list(row.tf_idf_keywords.keys())[:10]
-            row.topic_label = row.top_terms[0] if row.top_terms else (row.top_keywords[0] if row.top_keywords else "misc")
-        semantic_by_source, topic_clusters = _build_semantic_linking_map(rows)
-        for row in rows:
-            row.semantic_links = semantic_by_source.get(row.url, [])
-
-        _apply_linking_scores(rows=rows, incoming_counts=incoming_counts)
+        normalized_graph, topic_clusters, semantic_suggestions = enrich_graph_metrics(
+            rows=rows,
+            link_graph=link_graph,
+            incoming_counts=incoming_counts,
+            page_texts=page_texts,
+        )
         self._calculate_site_health_scores(rows=rows, incoming_counts=incoming_counts)
 
-        for row in rows:
-            if row.orphan_page:
-                row.issues.append(
-                    SiteAuditProIssue(
-                        severity="warning",
-                        code="orphan_or_isolated_page",
-                        title="Orphan page — no incoming internal links",
-                    )
-                )
-            outgoing_total = (row.outgoing_internal_links or 0) + (row.outgoing_external_links or 0)
-            if row.orphan_page:
-                row.recommendation = "Add internal links from relevant hub/category pages."
-            elif (row.images_without_alt or 0) > 0:
-                row.recommendation = "Add descriptive alt text for images."
-            elif row.weak_anchor_ratio and row.weak_anchor_ratio > 0.3:
-                row.recommendation = "Replace weak anchors with intent-rich descriptive anchors."
-            elif row.health_score is not None and row.health_score < 80:
-                row.recommendation = "Resolve technical and on-page issues to raise health score."
-            elif outgoing_total == 0:
-                row.recommendation = "Add contextual internal links to improve crawl paths."
-            else:
-                row.recommendation = "Maintain page quality and monitor regressions."
-            row.all_issues = [issue.code for issue in row.issues]
+        apply_orphan_page_signals(rows)
+        finalize_rows(rows)
 
-        semantic_suggestions: List[Dict[str, str]] = []
-        for topic, urls in topic_clusters.items():
-            if len(urls) < 2:
-                continue
-            base = urls[0]
-            linked = normalized_graph.get(base, set())
-            for candidate in urls[1:]:
-                if candidate not in linked:
-                    semantic_suggestions.append(
-                        {
-                            "source_url": base,
-                            "target_url": candidate,
-                            "topic": topic,
-                            "reason": "Shared topic without internal link",
-                        }
-                    )
-                if len(semantic_suggestions) >= 500:
-                    break
-            if len(semantic_suggestions) >= 500:
-                break
+        summary = build_summary(rows, mode=selected_mode)
 
-        severity_counts = {"critical": 0, "warning": 0, "info": 0}
-        for row in rows:
-            for issue in row.issues:
-                sev = (issue.severity or "info").lower()
-                if sev not in severity_counts:
-                    continue
-                severity_counts[sev] += 1
-
-        issues_total = sum(severity_counts.values())
-        avg_score = round(sum((r.health_score or 0.0) for r in rows) / len(rows), 1) if rows else 0.0
-
-        summary = SiteAuditProSummary(
-            total_pages=len(rows),
-            internal_pages=len(rows),
-            issues_total=issues_total,
-            critical_issues=severity_counts["critical"],
-            warning_issues=severity_counts["warning"],
-            info_issues=severity_counts["info"],
-            score=avg_score,
-            mode=selected_mode,
+        artifacts = build_artifacts_payload(
+            max_pages=max_pages,
+            rows=rows,
+            effective_batch_mode=effective_batch_mode,
+            prepared_batch_urls=prepared_batch_urls,
+            crawl_errors=crawl_errors,
+            topic_clusters=topic_clusters,
+            semantic_suggestions=semantic_suggestions,
+            broken_links_data=broken_links_data,
+            image_analysis_data=image_analysis_data,
+            homepage_row=homepage_row,
         )
-
-        crawl_budget_summary = {
-            "high_risk_urls": sum(1 for r in rows if (r.crawl_budget_risk or "") == "high"),
-            "medium_risk_urls": sum(1 for r in rows if (r.crawl_budget_risk or "") == "medium"),
-            "parameterized_urls": sum(1 for r in rows if int(r.url_params_count or 0) > 0),
-            "deep_path_urls": sum(1 for r in rows if int(r.path_depth or 0) >= 4),
-        }
-        homepage_security = {}
-        if homepage_row:
-            homepage_security = {
-                "url": homepage_row.url,
-                "security_headers_score": homepage_row.security_headers_score,
-                "csp_present": homepage_row.csp_present,
-                "hsts_present": homepage_row.hsts_present,
-                "x_frame_options_present": homepage_row.x_frame_options_present,
-                "referrer_policy_present": homepage_row.referrer_policy_present,
-                "permissions_policy_present": homepage_row.permissions_policy_present,
-                "mixed_content_count": homepage_row.mixed_content_count,
-            }
-
-        artifacts: Dict[str, Any] = {
-            "migration_stage": "adapter_lightweight_crawl",
-            "max_pages_requested": max_pages,
-            "max_pages_scanned": len(rows),
-            "batch_mode": effective_batch_mode,
-            "batch_urls_requested": len(prepared_batch_urls),
-            "crawl_errors": crawl_errors[:50],
-            "crawl_budget_summary": crawl_budget_summary,
-            "homepage_security": homepage_security,
-            "topic_clusters_count": len(topic_clusters),
-            "semantic_suggestions": semantic_suggestions,
-            "broken_links": broken_links_data,
-            "image_analysis": image_analysis_data,
-            "notes": [
-                "Lightweight crawl adapter is active",
-                "Full seopro calculation parity is pending",
-            ],
-        }
-        if effective_batch_mode:
-            artifacts["notes"].append("Batch URL mode active: only provided URLs were scanned")
 
         return NormalizedSiteAuditPayload(
             mode=selected_mode,
@@ -1770,95 +1273,5 @@ class SiteAuditProAdapter:
 
     @staticmethod
     def to_public_results(normalized: NormalizedSiteAuditPayload) -> Dict[str, Any]:
-        pages = [row.model_dump() for row in normalized.rows]
-        issues = [
-            {**issue.model_dump(), "url": row.url}
-            for row in normalized.rows
-            for issue in row.issues
-        ]
-        pagerank = sorted(
-            [{"url": row.url, "score": row.pagerank or 0.0} for row in normalized.rows],
-            key=lambda x: x["score"],
-            reverse=True,
-        )
-        tf_idf = [{"url": row.url, "top_terms": row.top_terms} for row in normalized.rows]
-        duplicate_title_groups: Dict[str, List[str]] = defaultdict(list)
-        duplicate_desc_groups: Dict[str, List[str]] = defaultdict(list)
-        topic_clusters: Dict[str, List[str]] = defaultdict(list)
-        for row in normalized.rows:
-            title = (row.title or "").strip().lower()
-            desc = (row.meta_description or "").strip().lower()
-            if row.duplicate_title_count > 1 and title:
-                duplicate_title_groups[title].append(row.url)
-            if row.duplicate_description_count > 1 and desc:
-                duplicate_desc_groups[desc].append(row.url)
-            topic_clusters[(row.topic_label or "misc")].append(row.url)
-
-        total_pages = max(1, len(normalized.rows))
-        orphan_pages = sum(1 for row in normalized.rows if row.orphan_page)
-        topic_hubs = sum(1 for row in normalized.rows if row.topic_hub)
-        pages_without_alt = sum(1 for row in normalized.rows if (row.images_without_alt or 0) > 0)
-        non_https_pages = sum(1 for row in normalized.rows if row.is_https is False)
-        avg_response_time = round(
-            sum((row.response_time_ms or 0) for row in normalized.rows) / total_pages,
-            1,
-        )
-        avg_readability = round(
-            sum((row.readability_score or 0.0) for row in normalized.rows) / total_pages,
-            1,
-        )
-        avg_link_quality = round(
-            sum((row.link_quality_score or 0.0) for row in normalized.rows) / total_pages,
-            1,
-        )
-        avg_perf_light = round(
-            sum((row.perf_light_score or 0.0) for row in normalized.rows) / total_pages,
-            1,
-        )
-
-        pipeline = {
-            "pagerank": pagerank,
-            "tf_idf": tf_idf,
-            "duplicates": {
-                "title_groups": [{"value": k, "urls": v} for k, v in duplicate_title_groups.items()],
-                "description_groups": [{"value": k, "urls": v} for k, v in duplicate_desc_groups.items()],
-            },
-            "site_health": {
-                "average_health_score": normalized.summary.score,
-                "critical_issues": normalized.summary.critical_issues,
-                "warning_issues": normalized.summary.warning_issues,
-            },
-            "semantic_linking_map": normalized.artifacts.get("semantic_suggestions", []),
-            "anchor_text_quality": {
-                "average_weak_anchor_ratio": round(
-                    sum((row.weak_anchor_ratio or 0.0) for row in normalized.rows) / max(1, len(normalized.rows)),
-                    3,
-                ),
-                "pages_with_weak_anchors": sum(1 for row in normalized.rows if (row.weak_anchor_ratio or 0.0) > 0.2),
-            },
-            "topic_clusters": [{"topic": k, "urls": v, "count": len(v)} for k, v in topic_clusters.items()],
-            "link_quality_scores": [{"url": row.url, "score": row.link_quality_score} for row in normalized.rows],
-            "metrics": {
-                "avg_response_time_ms": avg_response_time,
-                "avg_readability_score": avg_readability,
-                "avg_link_quality_score": avg_link_quality,
-                "avg_perf_light_score": avg_perf_light,
-                "orphan_pages": orphan_pages,
-                "topic_hubs": topic_hubs,
-                "pages_without_alt": pages_without_alt,
-                "non_https_pages": non_https_pages,
-                "crawl_budget_high_risk": sum(1 for row in normalized.rows if (row.crawl_budget_risk or "") == "high"),
-                "crawl_budget_medium_risk": sum(1 for row in normalized.rows if (row.crawl_budget_risk or "") == "medium"),
-            },
-        }
-        return {
-            "engine": "site_pro_adapter_v0",
-            "mode": normalized.mode,
-            "summary": normalized.summary.model_dump(),
-            "pages": pages,
-            "issues": issues,
-            "issues_count": normalized.summary.issues_total,
-            "pipeline": pipeline,
-            "artifacts": normalized.artifacts,
-        }
+        return build_public_results(normalized)
 

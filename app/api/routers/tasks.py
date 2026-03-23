@@ -7,20 +7,25 @@ stale-artifact cleanup, rate-limit info, and Celery status.
 from urllib.parse import urlsplit, urlunsplit
 from typing import Optional
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 
 from app.api.routers._task_store import (
     _utc_now_iso,
     delete_task_result,
     get_task_result,
+    get_task_store_compaction_stats,
     get_task_store_memory_stats,
     cleanup_task_results_memory,
     get_redis_client as get_task_store_redis,
 )
 from app.config import settings
+from app.core.ops_gate import require_ops_access
 from app.core.memory_guard import get_process_memory_snapshot, get_memory_guard_status
+from app.core.ops_observability import get_ops_observability_stats
 from app.core.progress import progress_tracker
+from app.tools.llmCrawler.queue import get_compaction_stats as get_llm_crawler_compaction_stats
 from app.tools.llmCrawler.queue import get_worker_heartbeat, queue_depth
+from app.tools.site_pro.service import get_site_pro_compaction_stats
 
 router = APIRouter(tags=["Tasks"])
 
@@ -105,8 +110,9 @@ async def delete_task(task_id: str):
 
 
 @router.post("/tasks/cleanup-stale-artifacts")
-async def cleanup_stale_artifacts(days: Optional[int] = None):
+async def cleanup_stale_artifacts(request: Request, days: Optional[int] = None):
     """Trigger stale report artifacts cleanup under REPORTS_DIR."""
+    require_ops_access(request)
     from app.core.task_cleanup import prune_stale_report_artifacts
 
     summary = prune_stale_report_artifacts(max_age_days=days)
@@ -246,8 +252,9 @@ async def celery_status():
 
 
 @router.get("/memory/status")
-async def task_memory_status():
+async def task_memory_status(request: Request):
     """Inspect in-process memory usage and fallback stores."""
+    require_ops_access(request)
 
     return {
         "status": "SUCCESS",
@@ -259,8 +266,9 @@ async def task_memory_status():
 
 
 @router.get("/ops/status")
-async def ops_status():
+async def ops_status(request: Request):
     """Operational status summary for Redis, workers, queues, and fallback stores."""
+    require_ops_access(request)
     redis_ok = False
     redis_error = None
     try:
@@ -321,12 +329,20 @@ async def ops_status():
             "task_store": get_task_store_memory_stats(),
             "progress_store": progress_tracker.get_memory_stats(),
         },
+        "payload_compaction": {
+            "task_store": get_task_store_compaction_stats(),
+            "progress": progress_tracker.get_compaction_stats(),
+            "llm_crawler": get_llm_crawler_compaction_stats(),
+            "site_audit_pro": get_site_pro_compaction_stats(),
+        },
+        "observability": get_ops_observability_stats(),
     }
 
 
 @router.post("/memory/cleanup")
-async def cleanup_memory(aggressive: bool = True):
+async def cleanup_memory(request: Request, aggressive: bool = True):
     """Force cleanup of in-memory fallback stores."""
+    require_ops_access(request)
     from app.core.progress import progress_tracker
     from app.core.memory_guard import run_memory_cleanup_now
 
@@ -341,3 +357,16 @@ async def cleanup_memory(aggressive: bool = True):
         "progress_store": progress_cleanup,
         "guard_cleanup": guard_cleanup,
     }
+
+
+@router.post("/maintenance/run")
+async def run_maintenance_now(request: Request, days: Optional[int] = None, force_gc: bool = True):
+    """Run consolidated maintenance routine used by the standalone maintenance script."""
+    require_ops_access(request)
+    from scripts.run_maintenance import run_maintenance
+
+    summary = run_maintenance(
+        stale_days=max(1, int(days or 7)),
+        force_gc=bool(force_gc),
+    )
+    return summary

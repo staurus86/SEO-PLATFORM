@@ -149,6 +149,10 @@ class Settings(BaseSettings):
     # Empty string means allow all ("*"). Set to your domain(s) in production.
     ALLOWED_ORIGINS: str = os.getenv("ALLOWED_ORIGINS", "")
 
+    # Ops dashboard / maintenance access
+    OPS_ACCESS_TOKEN: str = os.getenv("OPS_ACCESS_TOKEN", "")
+    OPS_ALLOW_ADMIN: bool = env_bool("OPS_ALLOW_ADMIN", "true")
+
     # History
     HISTORY_SIZE: int = 10
     

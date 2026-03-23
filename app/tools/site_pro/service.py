@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import json
 import os
+import threading
 import time
 from typing import Any, Callable, Dict, List, Optional
 
@@ -10,6 +12,41 @@ from .adapter import SiteAuditProAdapter
 from .artifacts import SiteProArtifactStore
 
 ProgressCallback = Optional[Callable[[int, str, Optional[Dict[str, Any]]], None]]
+_stats_lock = threading.RLock()
+_compaction_stats: Dict[str, Any] = {
+    "compactions_total": 0,
+    "original_bytes_total": 0,
+    "stored_bytes_total": 0,
+    "bytes_saved_total": 0,
+    "last_compacted_at": None,
+}
+
+
+def _estimate_bytes(payload: Any) -> int:
+    try:
+        return len(json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8"))
+    except Exception:
+        return 0
+
+
+def _record_compaction(*, original_size: int, compacted_size: int) -> None:
+    with _stats_lock:
+        _compaction_stats["compactions_total"] = int(_compaction_stats["compactions_total"]) + 1
+        _compaction_stats["original_bytes_total"] = int(_compaction_stats["original_bytes_total"]) + int(original_size)
+        _compaction_stats["stored_bytes_total"] = int(_compaction_stats["stored_bytes_total"]) + int(compacted_size)
+        _compaction_stats["bytes_saved_total"] = int(_compaction_stats["bytes_saved_total"]) + max(0, int(original_size) - int(compacted_size))
+        _compaction_stats["last_compacted_at"] = datetime.now(timezone.utc).isoformat()
+
+
+def get_site_pro_compaction_stats() -> Dict[str, Any]:
+    with _stats_lock:
+        stats = dict(_compaction_stats)
+    stats["inline_limits"] = {
+        "issues": SiteAuditProService._int_setting("SITE_AUDIT_PRO_INLINE_ISSUES_LIMIT", 200),
+        "semantic_linking_map": SiteAuditProService._int_setting("SITE_AUDIT_PRO_INLINE_SEMANTIC_LIMIT", 200),
+        "pages": SiteAuditProService._int_setting("SITE_AUDIT_PRO_INLINE_PAGES_LIMIT", 500),
+    }
+    return stats
 
 
 class SiteAuditProService:
@@ -233,6 +270,7 @@ class SiteAuditProService:
         Keep task payload small when chunk artifacts are available.
         Full records stay downloadable via manifest links.
         """
+        original_size = _estimate_bytes(public_results)
         issues_limit = self._int_setting("SITE_AUDIT_PRO_INLINE_ISSUES_LIMIT", 200)
         semantic_limit = self._int_setting("SITE_AUDIT_PRO_INLINE_SEMANTIC_LIMIT", 200)
         pages_limit = self._int_setting("SITE_AUDIT_PRO_INLINE_PAGES_LIMIT", 500)
@@ -281,3 +319,9 @@ class SiteAuditProService:
             if semantic_nested_omitted > 0:
                 nested["semantic_linking_map"] = semantic_nested_omitted
             artifacts["nested_omitted_counts"] = nested
+
+        if artifacts["payload_compacted"]:
+            _record_compaction(
+                original_size=original_size,
+                compacted_size=_estimate_bytes(public_results),
+            )

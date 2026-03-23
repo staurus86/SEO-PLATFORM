@@ -1,0 +1,297 @@
+{% extends "base.html" %}
+
+{% block title %}Ops Status Dashboard{% endblock %}
+
+{% block extra_css %}
+<style>
+    .ops-shell {
+        --ops-accent: #0f4c81;
+        --ops-accent-2: #0e7490;
+        --ops-ok: #047857;
+        --ops-warn: #b45309;
+        --ops-bad: #b91c1c;
+        position: relative;
+    }
+    .ops-shell::before {
+        content: "";
+        position: absolute;
+        inset: 0;
+        background:
+            radial-gradient(circle at top left, rgba(14,116,144,.12), transparent 32%),
+            linear-gradient(135deg, rgba(15,76,129,.06), transparent 45%);
+        pointer-events: none;
+        border-radius: 24px;
+    }
+    .ops-grid {
+        display: grid;
+        gap: 1rem;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    }
+    .ops-card {
+        position: relative;
+        border: 1px solid var(--ds-border);
+        background: linear-gradient(180deg, var(--ds-surface) 0%, var(--ds-surface-soft) 100%);
+        border-radius: 20px;
+        padding: 1rem 1.1rem;
+        box-shadow: 0 18px 50px rgba(15, 23, 42, 0.06);
+    }
+    .ops-card::after {
+        content: "";
+        position: absolute;
+        inset: auto 1rem 0 1rem;
+        height: 3px;
+        border-radius: 999px;
+        background: linear-gradient(90deg, var(--ops-accent), var(--ops-accent-2));
+        opacity: .18;
+    }
+    .ops-mono {
+        font-family: "IBM Plex Mono", "Consolas", monospace;
+        letter-spacing: -.02em;
+    }
+    .ops-status-pill {
+        display: inline-flex;
+        align-items: center;
+        gap: .45rem;
+        border-radius: 999px;
+        padding: .35rem .7rem;
+        font-size: .75rem;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: .08em;
+    }
+    .ops-status-pill.ok { background: rgba(4,120,87,.12); color: var(--ops-ok); }
+    .ops-status-pill.warn { background: rgba(180,83,9,.12); color: var(--ops-warn); }
+    .ops-status-pill.bad { background: rgba(185,28,28,.12); color: var(--ops-bad); }
+    .ops-metrics {
+        display: grid;
+        gap: .7rem;
+        grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    }
+    .ops-metric {
+        border: 1px solid var(--ds-border);
+        border-radius: 16px;
+        padding: .85rem .95rem;
+        background: rgba(255,255,255,.55);
+    }
+    .ops-table {
+        width: 100%;
+        border-collapse: collapse;
+    }
+    .ops-table th, .ops-table td {
+        text-align: left;
+        padding: .72rem .8rem;
+        border-bottom: 1px solid var(--ds-border);
+        vertical-align: top;
+    }
+    .ops-table th {
+        font-size: .75rem;
+        text-transform: uppercase;
+        letter-spacing: .08em;
+        color: var(--ds-text-muted);
+    }
+    .ops-dl {
+        display: grid;
+        gap: .45rem;
+        grid-template-columns: minmax(120px, 180px) 1fr;
+    }
+    .ops-dl dt { color: var(--ds-text-muted); }
+    .ops-dl dd { margin: 0; word-break: break-word; }
+    .ops-section-title {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 1rem;
+    }
+    @media (max-width: 768px) {
+        .ops-dl { grid-template-columns: 1fr; }
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<section class="ops-shell rounded-3xl p-5 md:p-7 overflow-hidden" style="background:var(--ds-surface);border:1px solid var(--ds-border);">
+    <div class="relative">
+        <div class="flex flex-col md:flex-row md:items-end md:justify-between gap-4 mb-6">
+            <div>
+                <div class="text-xs font-semibold uppercase tracking-[0.28em] mb-2" style="color:var(--ds-brand-2);">Operational Console</div>
+                <h2 class="text-3xl md:text-4xl font-extrabold" style="color:var(--ds-text);">Ops Status Dashboard</h2>
+                <p class="mt-2 max-w-3xl" style="color:var(--ds-text-secondary);">
+                    Сводка по Redis, LLM worker, memory fallback, compaction и recent-window метрикам без чтения raw JSON.
+                </p>
+            </div>
+            <div class="flex flex-wrap items-center gap-3">
+                <span id="ops-global-status" class="ops-status-pill warn">Loading</span>
+                <button id="ops-refresh-btn" class="ds-btn ds-btn-primary">
+                    <i class="fas fa-rotate-right"></i> Обновить
+                </button>
+            </div>
+        </div>
+
+        <div class="ops-grid mb-6">
+            <article class="ops-card">
+                <div class="text-xs uppercase tracking-[0.18em] mb-2" style="color:var(--ds-text-muted);">System</div>
+                <div class="text-3xl font-black mb-1 ops-mono" id="ops-rss">-</div>
+                <div class="text-sm" style="color:var(--ds-text-secondary);">RSS процесса</div>
+                <div class="mt-3 text-xs" style="color:var(--ds-text-muted);">Последнее обновление: <span id="ops-updated-at">-</span></div>
+            </article>
+            <article class="ops-card">
+                <div class="text-xs uppercase tracking-[0.18em] mb-2" style="color:var(--ds-text-muted);">Redis</div>
+                <div class="text-3xl font-black mb-1 ops-mono" id="ops-redis-state">-</div>
+                <div class="text-sm" style="color:var(--ds-text-secondary);">Task/progress/rate-limit/crawler backend</div>
+            </article>
+            <article class="ops-card">
+                <div class="text-xs uppercase tracking-[0.18em] mb-2" style="color:var(--ds-text-muted);">LLM Worker</div>
+                <div class="text-3xl font-black mb-1 ops-mono" id="ops-worker-state">-</div>
+                <div class="text-sm" style="color:var(--ds-text-secondary);">Heartbeat и queue depth</div>
+            </article>
+            <article class="ops-card">
+                <div class="text-xs uppercase tracking-[0.18em] mb-2" style="color:var(--ds-text-muted);">Compaction Saved</div>
+                <div class="text-3xl font-black mb-1 ops-mono" id="ops-bytes-saved">-</div>
+                <div class="text-sm" style="color:var(--ds-text-secondary);">Task + progress + crawler + Site Pro</div>
+            </article>
+        </div>
+
+        <section class="ops-card mb-6">
+            <div class="ops-section-title mb-4">
+                <div>
+                    <h3 class="text-xl font-bold" style="color:var(--ds-text);">Infra & Runtime</h3>
+                    <p class="text-sm" style="color:var(--ds-text-secondary);">Подключения, префиксы, heartbeat, memory fallback.</p>
+                </div>
+            </div>
+            <div class="ops-grid">
+                <div class="ops-metric">
+                    <div class="text-xs uppercase tracking-[0.16em] mb-2" style="color:var(--ds-text-muted);">Redis URLs</div>
+                    <dl id="ops-redis-urls" class="ops-dl text-sm ops-mono"></dl>
+                </div>
+                <div class="ops-metric">
+                    <div class="text-xs uppercase tracking-[0.16em] mb-2" style="color:var(--ds-text-muted);">Redis Prefixes</div>
+                    <dl id="ops-redis-prefixes" class="ops-dl text-sm ops-mono"></dl>
+                </div>
+                <div class="ops-metric">
+                    <div class="text-xs uppercase tracking-[0.16em] mb-2" style="color:var(--ds-text-muted);">Worker</div>
+                    <dl id="ops-worker-meta" class="ops-dl text-sm"></dl>
+                </div>
+                <div class="ops-metric">
+                    <div class="text-xs uppercase tracking-[0.16em] mb-2" style="color:var(--ds-text-muted);">Fallback Stores</div>
+                    <dl id="ops-memory-meta" class="ops-dl text-sm"></dl>
+                </div>
+            </div>
+        </section>
+
+        <section class="ops-card mb-6">
+            <div class="ops-section-title mb-4">
+                <div>
+                    <h3 class="text-xl font-bold" style="color:var(--ds-text);">Payload Compaction</h3>
+                    <p class="text-sm" style="color:var(--ds-text-secondary);">Общий объём trimming и настроенные thresholds по каждому источнику.</p>
+                </div>
+            </div>
+            <div id="ops-compaction-grid" class="ops-metrics"></div>
+        </section>
+
+        <section class="ops-card mb-6">
+            <div class="ops-section-title mb-4">
+                <div>
+                    <h3 class="text-xl font-bold" style="color:var(--ds-text);">Ops Actions</h3>
+                    <p class="text-sm" style="color:var(--ds-text-secondary);">Ручной cleanup in-memory fallback и удаление устаревших report artifacts.</p>
+                </div>
+            </div>
+            <div class="ops-metrics">
+                <div class="ops-metric">
+                    <div class="text-xs uppercase tracking-[0.16em] mb-2" style="color:var(--ds-text-muted);">Memory Cleanup</div>
+                    <p class="text-sm mb-3" style="color:var(--ds-text-secondary);">Запускает cleanup task/progress fallback и memory guard cleanup.</p>
+                    <div class="flex flex-wrap gap-2">
+                        <button id="ops-memory-cleanup-btn" class="ds-btn ds-btn-primary">
+                            <i class="fas fa-broom"></i> Cleanup Memory
+                        </button>
+                        <button id="ops-memory-cleanup-soft-btn" class="ds-btn">
+                            <i class="fas fa-wind"></i> Soft Cleanup
+                        </button>
+                    </div>
+                </div>
+                <div class="ops-metric">
+                    <div class="text-xs uppercase tracking-[0.16em] mb-2" style="color:var(--ds-text-muted);">Stale Artifacts</div>
+                    <p class="text-sm mb-3" style="color:var(--ds-text-secondary);">Удаляет старые отчёты из `REPORTS_DIR` по retention window.</p>
+                    <div class="flex flex-wrap items-center gap-2 mb-2">
+                        <label for="ops-artifacts-days" class="text-sm" style="color:var(--ds-text-muted);">Days</label>
+                        <input id="ops-artifacts-days" type="number" min="1" step="1" value="7" class="ds-input" style="max-width:120px;">
+                        <button id="ops-artifacts-cleanup-btn" class="ds-btn ds-btn-primary">
+                            <i class="fas fa-trash-can"></i> Cleanup Artifacts
+                        </button>
+                    </div>
+                </div>
+                <div class="ops-metric">
+                    <div class="text-xs uppercase tracking-[0.16em] mb-2" style="color:var(--ds-text-muted);">Maintenance Runner</div>
+                    <p class="text-sm mb-3" style="color:var(--ds-text-secondary);">Запускает общий maintenance flow: stale artifacts, LLM queue cleanup и memory cleanup.</p>
+                    <div class="flex flex-wrap items-center gap-2 mb-2">
+                        <label for="ops-maintenance-days" class="text-sm" style="color:var(--ds-text-muted);">Days</label>
+                        <input id="ops-maintenance-days" type="number" min="1" step="1" value="7" class="ds-input" style="max-width:120px;">
+                        <label class="flex items-center gap-2 text-sm" style="color:var(--ds-text-secondary);">
+                            <input id="ops-maintenance-force-gc" type="checkbox" checked class="rounded">
+                            Force GC
+                        </label>
+                    </div>
+                    <button id="ops-maintenance-run-btn" class="ds-btn ds-btn-primary">
+                        <i class="fas fa-screwdriver-wrench"></i> Run Maintenance
+                    </button>
+                </div>
+            </div>
+            <div id="ops-action-result" class="mt-4 rounded-2xl border p-4 text-sm ops-mono" style="border-color:var(--ds-border);background:var(--ds-surface-soft);color:var(--ds-text-secondary);">
+                No actions executed yet.
+            </div>
+        </section>
+
+        <section class="ops-card">
+            <div class="ops-section-title mb-4">
+                <div>
+                    <h3 class="text-xl font-bold" style="color:var(--ds-text);">Recent Windows</h3>
+                    <p class="text-sm" style="color:var(--ds-text-secondary);">Срезы за последние 15 и 60 минут по queue wait, runtime, exports и payload size.</p>
+                </div>
+            </div>
+            <div class="overflow-x-auto">
+                <table class="ops-table" id="ops-observability-table">
+                    <thead>
+                        <tr>
+                            <th>Metric</th>
+                            <th>Lifetime</th>
+                            <th>Recent 15m</th>
+                            <th>Recent 60m</th>
+                            <th>Last</th>
+                        </tr>
+                    </thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+        </section>
+
+        <section class="ops-card mt-6">
+            <div class="ops-section-title mb-4">
+                <div>
+                    <h3 class="text-xl font-bold" style="color:var(--ds-text);">Session Trace</h3>
+                    <p class="text-sm" style="color:var(--ds-text-secondary);">Последние ops-действия и raw snapshot ответа `/api/ops/status`.</p>
+                </div>
+            </div>
+            <div class="ops-grid">
+                <div class="ops-metric">
+                    <div class="text-xs uppercase tracking-[0.16em] mb-3" style="color:var(--ds-text-muted);">Recent Actions</div>
+                    <div id="ops-action-history" class="space-y-2 text-sm" style="color:var(--ds-text-secondary);">
+                        No actions yet.
+                    </div>
+                </div>
+                <div class="ops-metric">
+                    <div class="flex items-center justify-between gap-3 mb-3">
+                        <div class="text-xs uppercase tracking-[0.16em]" style="color:var(--ds-text-muted);">Raw Snapshot</div>
+                        <button id="ops-copy-snapshot-btn" class="ds-btn">
+                            <i class="fas fa-copy"></i> Copy JSON
+                        </button>
+                    </div>
+                    <pre id="ops-raw-snapshot" class="ops-mono text-xs rounded-xl border p-3 overflow-auto" style="border-color:var(--ds-border);background:var(--ds-surface-soft);max-height:340px;">Loading...</pre>
+                </div>
+            </div>
+        </section>
+    </div>
+</section>
+{% endblock %}
+
+{% block extra_js %}
+<script src="/static/js/ops-status.js?v={{ asset_version }}"></script>
+{% endblock %}

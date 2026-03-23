@@ -36,6 +36,13 @@ class ProgressTracker:
         self._memory_payload_size_bytes = {}
         self._memory_lock = threading.RLock()
         self.ttl = 3600 * 2  # 2 hours
+        self._compaction_stats = {
+            "compactions_total": 0,
+            "original_bytes_total": 0,
+            "stored_bytes_total": 0,
+            "bytes_saved_total": 0,
+            "last_compacted_at": None,
+        }
     
     @property
     def redis_client(self):
@@ -74,6 +81,14 @@ class ProgressTracker:
         except Exception:
             return 0
 
+    def _record_compaction(self, *, original_size: int, compacted_size: int) -> None:
+        with self._memory_lock:
+            self._compaction_stats["compactions_total"] = int(self._compaction_stats["compactions_total"]) + 1
+            self._compaction_stats["original_bytes_total"] = int(self._compaction_stats["original_bytes_total"]) + int(original_size)
+            self._compaction_stats["stored_bytes_total"] = int(self._compaction_stats["stored_bytes_total"]) + int(compacted_size)
+            self._compaction_stats["bytes_saved_total"] = int(self._compaction_stats["bytes_saved_total"]) + max(0, int(original_size) - int(compacted_size))
+            self._compaction_stats["last_compacted_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
     def _compact_extra(self, extra: Dict[str, Any]) -> Dict[str, Any]:
         threshold = max(8 * 1024, int(getattr(settings, "PROGRESS_COMPACT_THRESHOLD_BYTES", 128 * 1024) or (128 * 1024)))
         original = {"extra": extra}
@@ -107,6 +122,7 @@ class ProgressTracker:
                 "removed_fields": removed[:20],
                 "removed_fields_count": len(removed),
             }
+            self._record_compaction(original_size=original_size, compacted_size=compacted_size)
             logger.info("Progress payload compacted: %s -> %s bytes; removed=%s", original_size, compacted_size, len(removed))
         return compacted
 
@@ -184,6 +200,15 @@ class ProgressTracker:
 
     def get_memory_stats(self) -> Dict[str, Any]:
         return self.cleanup_memory(idle_seconds=0.0, aggressive=False)
+
+    def get_compaction_stats(self) -> Dict[str, Any]:
+        with self._memory_lock:
+            stats = dict(self._compaction_stats)
+        stats["threshold_bytes"] = max(
+            8 * 1024,
+            int(getattr(settings, "PROGRESS_COMPACT_THRESHOLD_BYTES", 128 * 1024) or (128 * 1024)),
+        )
+        return stats
     
     def update_progress(
         self,

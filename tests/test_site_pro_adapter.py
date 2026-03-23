@@ -2,6 +2,8 @@ import unittest
 from unittest.mock import patch
 
 from app.tools.site_pro.adapter import SiteAuditProAdapter
+from app.tools.site_pro.postprocess import build_summary, finalize_rows
+from app.tools.site_pro.schema import NormalizedSiteAuditRow
 
 
 class _MockResponse:
@@ -220,6 +222,119 @@ class SiteProAdapterTests(unittest.TestCase):
             public = adapter.to_public_results(normalized)
 
         self.assertLessEqual(public["summary"]["total_pages"], 2)
+
+    def test_health_score_tolerates_missing_response_time(self):
+        adapter = SiteAuditProAdapter()
+        row = NormalizedSiteAuditRow(
+            url="https://site.test",
+            final_url="https://site.test",
+            status_code=200,
+            status_line="200 OK",
+            indexable=True,
+            is_https=True,
+            mobile_friendly_hint=True,
+            compression_enabled=True,
+            cache_control="max-age=3600",
+            canonical_status="self",
+            html_quality_score=80.0,
+            response_time_ms=None,
+            structured_data=1,
+            word_count=350,
+            unique_percent=90.0,
+            readability_score=70.0,
+            toxicity_score=0.0,
+        )
+
+        adapter._calculate_site_health_scores(rows=[row], incoming_counts={})
+
+        self.assertIsNotNone(row.health_score)
+        self.assertGreater(row.health_score, 0.0)
+
+    def test_finalize_rows_populates_recommendation_and_all_issues(self):
+        row = NormalizedSiteAuditRow(
+            url="https://site.test",
+            images_without_alt=2,
+            outgoing_internal_links=3,
+            outgoing_external_links=1,
+            issues=[],
+        )
+        row.issues.append(type("Issue", (), {"code": "img_missing_alt"})())
+        row.issues.append(type("Issue", (), {"code": "img_generic_alt"})())
+
+        finalize_rows([row])
+
+        self.assertEqual(row.recommendation, "Add descriptive alt text for images.")
+        self.assertEqual(row.all_issues, ["img_missing_alt", "img_generic_alt"])
+
+    def test_build_summary_aggregates_issue_counts_and_average_score(self):
+        row1 = NormalizedSiteAuditRow(url="https://site.test/1", health_score=90.0)
+        row2 = NormalizedSiteAuditRow(url="https://site.test/2", health_score=70.0)
+        row1.issues = [
+            type("Issue", (), {"severity": "critical"})(),
+            type("Issue", (), {"severity": "warning"})(),
+        ]
+        row2.issues = [type("Issue", (), {"severity": "info"})()]
+
+        summary = build_summary([row1, row2], mode="full")
+
+        self.assertEqual(summary.total_pages, 2)
+        self.assertEqual(summary.issues_total, 3)
+        self.assertEqual(summary.critical_issues, 1)
+        self.assertEqual(summary.warning_issues, 1)
+        self.assertEqual(summary.info_issues, 1)
+        self.assertEqual(summary.score, 80.0)
+        self.assertEqual(summary.mode, "full")
+
+    def test_to_public_results_contract_remains_stable(self):
+        public = build_mock_public_result()
+
+        self.assertEqual(
+            set(public.keys()),
+            {"engine", "mode", "summary", "pages", "issues", "issues_count", "pipeline", "artifacts"},
+        )
+        self.assertEqual(public["engine"], "site_pro_adapter_v0")
+        self.assertEqual(public["issues_count"], public["summary"]["issues_total"])
+
+        pipeline = public["pipeline"]
+        self.assertEqual(
+            set(pipeline.keys()),
+            {
+                "pagerank",
+                "tf_idf",
+                "duplicates",
+                "site_health",
+                "semantic_linking_map",
+                "anchor_text_quality",
+                "topic_clusters",
+                "link_quality_scores",
+                "metrics",
+            },
+        )
+        self.assertIn("avg_response_time_ms", pipeline["metrics"])
+        self.assertIn("avg_readability_score", pipeline["metrics"])
+        self.assertIn("avg_link_quality_score", pipeline["metrics"])
+        self.assertIn("avg_perf_light_score", pipeline["metrics"])
+        self.assertIn("orphan_pages", pipeline["metrics"])
+        self.assertIn("crawl_budget_high_risk", pipeline["metrics"])
+        self.assertIn("crawl_budget_medium_risk", pipeline["metrics"])
+        self.assertEqual(
+            set(public["artifacts"].keys()),
+            {
+                "migration_stage",
+                "max_pages_requested",
+                "max_pages_scanned",
+                "batch_mode",
+                "batch_urls_requested",
+                "crawl_errors",
+                "crawl_budget_summary",
+                "homepage_security",
+                "topic_clusters_count",
+                "semantic_suggestions",
+                "broken_links",
+                "image_analysis",
+                "notes",
+            },
+        )
 
 
 if __name__ == "__main__":

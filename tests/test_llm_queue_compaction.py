@@ -2,6 +2,49 @@ import unittest
 
 
 class LlmQueueCompactionTests(unittest.TestCase):
+    def test_llm_job_observability_tracks_queue_wait_and_runtime(self):
+        from app.core.ops_observability import get_ops_observability_stats
+        from app.tools.llmCrawler.queue import create_job_record, save_job_record, update_job_record
+
+        before = get_ops_observability_stats()["llm_jobs"]
+        job = create_job_record(
+            job_id="llm-obs-job",
+            request_id="req-1",
+            requested_url="https://example.com",
+            options={},
+        )
+        save_job_record(job)
+        update_job_record("llm-obs-job", status="running", progress=5)
+        update_job_record("llm-obs-job", status="done", progress=100, duration_ms=123, result={"ok": True})
+        after = get_ops_observability_stats()["llm_jobs"]
+
+        self.assertGreaterEqual(after["queue_wait_ms"]["count"], before["queue_wait_ms"]["count"] + 1)
+        self.assertGreaterEqual(after["run_duration_ms"]["count"], before["run_duration_ms"]["count"] + 1)
+        self.assertGreaterEqual(after["end_to_end_ms"]["count"], before["end_to_end_ms"]["count"] + 1)
+        self.assertGreaterEqual(after["result_payload_bytes"]["count"], before["result_payload_bytes"]["count"] + 1)
+        self.assertIn("recent_15m", after["queue_wait_ms"])
+        self.assertIn("recent_60m", after["end_to_end_ms"])
+        self.assertIn("recent_15m", after["result_payload_bytes"])
+
+    def test_compaction_stats_accumulate(self):
+        from app.tools.llmCrawler.queue import _truncate_heavy_fields, get_compaction_stats
+
+        before = get_compaction_stats()["compactions_total"]
+        _truncate_heavy_fields(
+            {
+                "jobId": "llm-job-stats",
+                "result": {
+                    "options": {"include_raw_html": False, "include_rendered_html": False},
+                    "content_segments": [{"id": i} for i in range(50)],
+                    "nojs": {"raw_html": "x" * 1000},
+                },
+            }
+        )
+        after = get_compaction_stats()
+
+        self.assertGreaterEqual(after["compactions_total"], before + 1)
+        self.assertGreater(after["bytes_saved_total"], 0)
+
     def test_truncate_heavy_fields_limits_debug_arrays(self):
         from app.tools.llmCrawler.queue import _truncate_heavy_fields
 

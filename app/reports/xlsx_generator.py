@@ -12,11 +12,13 @@ import re
 import math
 import hashlib
 import tempfile
+import time
 from urllib.parse import urljoin
 
 import requests
 
 from app.config import settings
+from app.core.ops_observability import record_export_generation
 
 
 class XLSXGenerator:
@@ -182,7 +184,14 @@ class XLSXGenerator:
 
     def _save_workbook(self, wb: Workbook, filepath: str) -> None:
         self._sanitize_workbook_text(wb)
+        started = time.perf_counter()
         wb.save(filepath)
+        duration_ms = int((time.perf_counter() - started) * 1000)
+        try:
+            size_bytes = os.path.getsize(filepath)
+        except OSError:
+            size_bytes = 0
+        record_export_generation(duration_ms, size_bytes, "xlsx")
 
     def _add_cover_sheet(self, wb: Workbook, title: str, url: str, generated_at: str) -> None:
         """Add a branded Cover sheet as the first worksheet."""

@@ -11,6 +11,11 @@ from typing import Optional, Dict, Any
 from copy import deepcopy
 
 from app.core.memory_guard import mark_activity, register_cleanup_callback
+from app.core.ops_observability import (
+    record_task_completed,
+    record_task_result_size,
+    record_task_started,
+)
 
 # Redis-based storage for task results
 _redis_client = None
@@ -23,6 +28,13 @@ _task_last_access_at: Dict[str, float] = {}
 _task_payload_size_bytes: Dict[str, int] = {}
 _task_lock = threading.RLock()
 _last_memory_prune_ts = 0.0
+_task_compaction_stats: Dict[str, Any] = {
+    "compactions_total": 0,
+    "original_bytes_total": 0,
+    "stored_bytes_total": 0,
+    "bytes_saved_total": 0,
+    "last_compacted_at": None,
+}
 
 _TERMINAL_STATUSES = {"SUCCESS", "FAILURE"}
 _HEAVY_DEBUG_KEYS = {
@@ -93,6 +105,12 @@ def _compact_task_payload(task_id: str, data: Dict[str, Any]) -> Dict[str, Any]:
         }
     )
     compacted["storage_meta"] = storage_meta
+    with _task_lock:
+        _task_compaction_stats["compactions_total"] = int(_task_compaction_stats["compactions_total"]) + 1
+        _task_compaction_stats["original_bytes_total"] = int(_task_compaction_stats["original_bytes_total"]) + int(original_size)
+        _task_compaction_stats["stored_bytes_total"] = int(_task_compaction_stats["stored_bytes_total"]) + int(compacted_size)
+        _task_compaction_stats["bytes_saved_total"] = int(_task_compaction_stats["bytes_saved_total"]) + max(0, int(original_size) - int(compacted_size))
+        _task_compaction_stats["last_compacted_at"] = _utc_now_iso()
     print(f"[API] Compacted task payload {task_id}: {original_size} -> {compacted_size} bytes; removed {len(removed)} fields")
     return compacted
 
@@ -250,6 +268,18 @@ def get_task_store_memory_stats() -> Dict[str, Any]:
     return cleanup_task_results_memory(idle_seconds=0.0, aggressive=False)
 
 
+def get_task_store_compaction_stats() -> Dict[str, Any]:
+    from app.config import settings
+
+    with _task_lock:
+        stats = dict(_task_compaction_stats)
+    stats["threshold_bytes"] = max(
+        32 * 1024,
+        int(getattr(settings, "TASK_STORE_COMPACT_THRESHOLD_BYTES", 768 * 1024) or (768 * 1024)),
+    )
+    return stats
+
+
 def _maybe_prune_memory() -> None:
     global _last_memory_prune_ts
     now = time.time()
@@ -281,17 +311,19 @@ def get_task_result(task_id: str) -> Optional[Dict[str, Any]]:
         return task
 
 
-def _save_task_payload(task_id: str, data: Dict[str, Any]) -> None:
+def _save_task_payload(task_id: str, data: Dict[str, Any]) -> Dict[str, Any]:
     """Persist task payload in Redis (24h TTL) or memory fallback."""
     mark_activity("task_store:save")
     _maybe_prune_memory()
+    original_payload_size = _estimate_payload_size_bytes(data)
     data = _compact_task_payload(task_id, data)
+    stored_payload_size = _estimate_payload_size_bytes(data)
 
     redis_client = get_redis_client()
     if redis_client:
         try:
             redis_client.setex(_task_key(task_id), 86400, json.dumps(data))
-            return
+            return data
         except Exception as exc:
             _mark_redis_unavailable(exc, "set")
 
@@ -300,9 +332,12 @@ def _save_task_payload(task_id: str, data: Dict[str, Any]) -> None:
         task_results_memory[task_id] = data
         _task_updated_at[task_id] = now
         _task_last_access_at[task_id] = now
-        _task_payload_size_bytes[task_id] = _estimate_payload_size_bytes(data)
+        _task_payload_size_bytes[task_id] = stored_payload_size
 
     cleanup_task_results_memory(idle_seconds=0.0, aggressive=False)
+    if str(data.get("status") or "").upper() in _TERMINAL_STATUSES:
+        record_task_result_size(original_payload_size, stored_payload_size)
+    return data
 
 
 def create_task_result(task_id: str, task_type: str, url: str, result: Dict[str, Any]):
@@ -322,7 +357,9 @@ def create_task_result(task_id: str, task_type: str, url: str, result: Dict[str,
         "result": result,
         "completed_at": now,
     }
-    _save_task_payload(task_id, data)
+    saved = _save_task_payload(task_id, data)
+    record_task_started(saved.get("created_at"), saved.get("started_at"))
+    record_task_completed(saved.get("created_at"), saved.get("started_at"), saved.get("completed_at"))
     print(f"[API] Task {task_id} stored")
 
 
@@ -364,6 +401,8 @@ def update_task_state(
     if not task:
         return
     now = _utc_now_iso()
+    previous_started_at = task.get("started_at")
+    previous_completed_at = task.get("completed_at")
     if status is not None:
         task["status"] = status
         if status == "RUNNING" and not task.get("started_at"):
@@ -383,7 +422,11 @@ def update_task_state(
         if not task.get("started_at"):
             task["started_at"] = now
         task["completed_at"] = now
-    _save_task_payload(task_id, task)
+    saved = _save_task_payload(task_id, task)
+    if status == "RUNNING" and not previous_started_at and saved.get("started_at"):
+        record_task_started(saved.get("created_at"), saved.get("started_at"))
+    if status in ("SUCCESS", "FAILURE") and not previous_completed_at and saved.get("completed_at"):
+        record_task_completed(saved.get("created_at"), saved.get("started_at"), saved.get("completed_at"))
 
     # Broadcast update via WebSocket (best-effort, fire-and-forget)
     try:

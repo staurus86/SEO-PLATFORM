@@ -7,6 +7,25 @@ from app.tools.site_pro.service import SiteAuditProService
 
 
 class SiteProArtifactsTests(unittest.TestCase):
+    def test_site_pro_compaction_stats_accumulate(self):
+        from app.tools.site_pro.service import get_site_pro_compaction_stats
+
+        service = SiteAuditProService()
+        before = get_site_pro_compaction_stats()["compactions_total"]
+        public_payload = {
+            "summary": {"total_pages": 520, "issues_total": 260},
+            "pages": [{"url": f"https://site.test/p{i}"} for i in range(520)],
+            "issues": [{"url": f"https://site.test/p{i}"} for i in range(260)],
+            "pipeline": {"semantic_linking_map": [{"source_url": f"https://site.test/p{i}"} for i in range(240)]},
+            "artifacts": {"chunk_manifest": {"chunks": []}},
+        }
+
+        service._compact_inline_payload(public_payload)
+        after = get_site_pro_compaction_stats()
+
+        self.assertGreaterEqual(after["compactions_total"], before + 1)
+        self.assertGreater(after["bytes_saved_total"], 0)
+
     def test_full_mode_emits_chunk_manifest_and_files(self):
         service = SiteAuditProService()
         task_id = "sitepro-artifacts-test"

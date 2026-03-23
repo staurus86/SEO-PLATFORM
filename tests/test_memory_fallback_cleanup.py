@@ -51,6 +51,9 @@ class TaskStoreMemoryCleanupTests(unittest.TestCase):
 
     @patch("app.api.routers._task_store.get_redis_client", return_value=None)
     def test_task_timestamps_track_running_and_completion(self, _redis_mock):
+        from app.core.ops_observability import get_ops_observability_stats
+
+        before = get_ops_observability_stats()["tasks"]
         _task_store.create_task_pending("task-progress", "redirect_checker", "https://example.com")
         pending = _task_store.get_task_result("task-progress")
 
@@ -72,6 +75,14 @@ class TaskStoreMemoryCleanupTests(unittest.TestCase):
         self.assertIsNotNone(finished.get("started_at"))
         self.assertIsNotNone(finished.get("updated_at"))
         self.assertIsNotNone(finished.get("completed_at"))
+        after = get_ops_observability_stats()["tasks"]
+        self.assertGreaterEqual(after["queue_wait_ms"]["count"], before["queue_wait_ms"]["count"] + 1)
+        self.assertGreaterEqual(after["run_duration_ms"]["count"], before["run_duration_ms"]["count"] + 1)
+        self.assertGreaterEqual(after["end_to_end_ms"]["count"], before["end_to_end_ms"]["count"] + 1)
+        self.assertGreaterEqual(after["result_payload_bytes"]["count"], before["result_payload_bytes"]["count"] + 1)
+        self.assertIn("recent_15m", after["queue_wait_ms"])
+        self.assertIn("recent_60m", after["run_duration_ms"])
+        self.assertIn("recent_15m", after["result_payload_bytes"])
 
 
 class ProgressMemoryCleanupTests(unittest.TestCase):

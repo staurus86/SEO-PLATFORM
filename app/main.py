@@ -56,6 +56,7 @@ try:
     from fastapi.responses import HTMLResponse, RedirectResponse
     from app.middleware import RateLimitMiddleware
     from app.core.memory_guard import start_memory_guard, stop_memory_guard, get_process_memory_snapshot
+    from app.core.ops_gate import is_ops_allowed
     logger.info("[OK] FastAPI imported successfully")
 except Exception as e:
     logger.error(f"[ERROR] FastAPI import failed: {e}")
@@ -237,9 +238,9 @@ async def index(request: Request):
         except Exception:
             llm_enabled = False
         return templates.TemplateResponse(
+            request,
             "index.html",
             {
-                "request": request,
                 "feature_llm_crawler_enabled": llm_enabled,
             },
         )
@@ -251,10 +252,29 @@ async def results_page(request: Request, task_id: str):
     """Results page."""
     if templates:
         return templates.TemplateResponse(
-            "task_progress.html", 
-            {"request": request, "task_id": task_id, "app_version": settings.APP_VERSION}
+            request,
+            "task_progress.html",
+            {"task_id": task_id, "app_version": settings.APP_VERSION}
         )
     return HTMLResponse(f"<h1>Results</h1><p>Task: {task_id}</p>")
+
+
+@app.get("/ops", response_class=HTMLResponse)
+async def ops_page(request: Request):
+    """Operational status dashboard page."""
+    if not is_ops_allowed(request):
+        return HTMLResponse("<h1>403 Forbidden</h1><p>Ops access denied</p>", status_code=403)
+    if templates:
+        response = templates.TemplateResponse(
+            request,
+            "ops_status.html",
+            {"app_version": settings.APP_VERSION},
+        )
+        token = str(request.query_params.get("ops_token") or "").strip()
+        if token:
+            response.set_cookie("ops_token", token, httponly=True, samesite="lax")
+        return response
+    return HTMLResponse("<h1>Ops Status</h1><p>Templates not loaded</p>")
 
 
 @app.get("/llm-crawler/results/{job_id}", response_class=HTMLResponse)
@@ -263,9 +283,9 @@ async def llm_crawler_results_page(request: Request, job_id: str):
     if templates:
         ui_wow_enabled = bool(getattr(settings, "LLM_UI_WOW_ENABLED", False))
         return templates.TemplateResponse(
+            request,
             "llm_crawler_result_v2.html",
             {
-                "request": request,
                 "job_id": job_id,
                 "app_version": settings.APP_VERSION,
                 "llm_ui_wow_enabled": ui_wow_enabled,

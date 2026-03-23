@@ -11,11 +11,13 @@ from datetime import datetime
 import os
 import json
 import tempfile
+import time
 from urllib.parse import urljoin
 
 import requests
 
 from app.config import settings
+from app.core.ops_observability import record_export_generation
 
 
 class DOCXGenerator:
@@ -253,7 +255,14 @@ class DOCXGenerator:
     def _save_document(self, doc: Document, filepath: str) -> None:
         """Normalize text and save DOCX."""
         self._normalize_document_text(doc)
+        started = time.perf_counter()
         doc.save(filepath)
+        duration_ms = int((time.perf_counter() - started) * 1000)
+        try:
+            size_bytes = os.path.getsize(filepath)
+        except OSError:
+            size_bytes = 0
+        record_export_generation(duration_ms, size_bytes, "docx")
 
     def _add_cover_page(self, doc: Document, title: str, subtitle: str, url: str, generated_at: str) -> None:
         """Creates a branded cover page."""
@@ -3127,4 +3136,3 @@ class DOCXGenerator:
 
 # Singleton
 docx_generator = DOCXGenerator()
-
