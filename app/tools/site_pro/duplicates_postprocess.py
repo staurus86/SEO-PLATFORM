@@ -26,8 +26,10 @@ def apply_duplicate_and_depth_signals(
     for row in rows:
         row_title = titles_by_url.get(row.url, "")
         row_desc = descriptions_by_url.get(row.url, "")
-        row.duplicate_title_count = title_counter.get(row_title, 0) if row_title else 0
-        row.duplicate_description_count = desc_counter.get(row_desc, 0) if row_desc else 0
+        title_count = title_counter.get(row_title, 0) if row_title else 0
+        desc_count = desc_counter.get(row_desc, 0) if row_desc else 0
+        row.duplicate_title_count = title_count if title_count > 1 else 0
+        row.duplicate_description_count = desc_count if desc_count > 1 else 0
 
         if row_title in duplicate_titles:
             row.issues.append(

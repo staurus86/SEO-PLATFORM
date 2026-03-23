@@ -55,6 +55,15 @@ def _unique_percent(text: str) -> float:
     return round(min(100.0, max(0.0, (len(set(filtered)) / len(filtered)) * 100.0)), 1)
 
 
+def _structured_type_label(raw_type: Any) -> str:
+    value = str(raw_type or "").strip()
+    if not value:
+        return ""
+    if "/" in value or "#" in value:
+        value = re.split(r"[/#]", value)[-1]
+    return value[:120]
+
+
 def _detect_structured_data(soup: BeautifulSoup) -> Tuple[int, Dict[str, int], List[str]]:
     json_ld_tags = soup.find_all("script", attrs={"type": lambda v: str(v).lower().strip() == "application/ld+json"})
     microdata_items = soup.find_all(attrs={"itemtype": True})
@@ -65,10 +74,29 @@ def _detect_structured_data(soup: BeautifulSoup) -> Tuple[int, Dict[str, int], L
         "rdfa": len(rdfa_items),
     }
     types: Set[str] = set()
+    for obj in _extract_jsonld_objects(soup):
+        raw_type = obj.get("@type")
+        if isinstance(raw_type, list):
+            for item in raw_type:
+                label = _structured_type_label(item)
+                if label:
+                    types.add(label)
+        else:
+            label = _structured_type_label(raw_type)
+            if label:
+                types.add(label)
     for item in microdata_items:
         itemtype = str(item.get("itemtype") or "").strip()
         if itemtype:
-            types.add(itemtype[:120])
+            label = _structured_type_label(itemtype)
+            if label:
+                types.add(label)
+    for item in rdfa_items:
+        typeof = str(item.get("typeof") or "").strip()
+        for part in re.split(r"\s+", typeof):
+            label = _structured_type_label(part)
+            if label:
+                types.add(label)
     return detail["json_ld"] + detail["microdata"] + detail["rdfa"], detail, sorted(types)[:15]
 
 

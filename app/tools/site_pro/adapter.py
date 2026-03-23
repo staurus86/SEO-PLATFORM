@@ -74,6 +74,7 @@ from .crawl_state import record_page_state
 from .signals_stage import apply_homepage_security_signals, apply_orphan_page_signals, find_homepage_row
 from .postprocess import build_summary, finalize_rows
 from .public_results import build_public_results
+from .sitemap_scope import sample_site_urls_from_sitemaps
 
 
 class SiteAuditProAdapter:
@@ -1077,14 +1078,42 @@ class SiteAuditProAdapter:
                 prepared_batch_urls.append(normalized)
 
         effective_batch_mode = bool(batch_mode and prepared_batch_urls)
-        queue: Deque[str] = deque(prepared_batch_urls if effective_batch_mode else [start_url])
+        sitemap_scope: Dict[str, Any] = {
+            "sample_urls": [],
+            "sample_set": set(),
+            "notes": [],
+            "source": None,
+            "root_sitemaps": [],
+            "sitemaps_scanned": 0,
+            "urls_discovered": 0,
+            "truncated": False,
+        }
         visited: Set[str] = set()
         depth_by_url: Dict[str, int] = {}
         if effective_batch_mode:
+            queue = deque(prepared_batch_urls)
             for u in prepared_batch_urls:
                 depth_by_url[self._normalize_url(u)] = 0
         else:
+            from .network import build_session
+            session = build_session(use_proxy)
+            sitemap_scope = sample_site_urls_from_sitemaps(
+                site_url=start_url,
+                session=session,
+                page_limit=page_limit,
+                timeout=12,
+            )
+            seed_urls = [start_url]
+            for candidate in sitemap_scope.get("sample_urls") or []:
+                normalized_candidate = self._normalize_url(candidate)
+                if normalized_candidate and normalized_candidate not in seed_urls:
+                    seed_urls.append(normalized_candidate)
+                    depth_by_url[normalized_candidate] = 1
+            queue = deque(seed_urls)
             depth_by_url[self._normalize_url(start_url)] = 0
+        if effective_batch_mode:
+            from .network import build_session
+            session = build_session(use_proxy)
         rows: List[NormalizedSiteAuditRow] = []
         titles_by_url: Dict[str, str] = {}
         descriptions_by_url: Dict[str, str] = {}
@@ -1101,8 +1130,6 @@ class SiteAuditProAdapter:
         all_image_urls: Dict[str, Set[str]] = defaultdict(set)
         all_image_urls_global: Set[str] = set()
 
-        from .network import build_session
-        session = build_session(use_proxy)
         total_target = len(prepared_batch_urls) if effective_batch_mode else page_limit
         total_target = max(1, total_target)
 
@@ -1247,6 +1274,16 @@ class SiteAuditProAdapter:
         self._calculate_site_health_scores(rows=rows, incoming_counts=incoming_counts)
 
         apply_orphan_page_signals(rows)
+        sitemap_sample_set = {self._normalize_url(item) for item in (sitemap_scope.get("sample_set") or set()) if item}
+        for row in rows:
+            normalized_candidates = {
+                self._normalize_url(row.url),
+                self._normalize_url(row.final_url or ""),
+            }
+            in_sitemap = any(candidate and candidate in sitemap_sample_set for candidate in normalized_candidates)
+            row.in_sitemap = in_sitemap
+            if in_sitemap:
+                row.sitemap_source = str(sitemap_scope.get("source") or "sampled")
         finalize_rows(rows)
 
         summary = build_summary(rows, mode=selected_mode)
@@ -1262,6 +1299,15 @@ class SiteAuditProAdapter:
             broken_links_data=broken_links_data,
             image_analysis_data=image_analysis_data,
             homepage_row=homepage_row,
+            sitemap_scope={
+                "source": sitemap_scope.get("source"),
+                "root_sitemaps": sitemap_scope.get("root_sitemaps") or [],
+                "sitemaps_scanned": int(sitemap_scope.get("sitemaps_scanned") or 0),
+                "urls_discovered": int(sitemap_scope.get("urls_discovered") or 0),
+                "sample_size": len(sitemap_scope.get("sample_urls") or []),
+                "truncated": bool(sitemap_scope.get("truncated")),
+                "notes": sitemap_scope.get("notes") or [],
+            },
         )
 
         return NormalizedSiteAuditPayload(

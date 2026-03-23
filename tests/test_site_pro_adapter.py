@@ -7,11 +7,13 @@ from app.tools.site_pro.schema import NormalizedSiteAuditRow
 
 
 class _MockResponse:
-    def __init__(self, url: str, status_code: int, text: str, reason: str = "OK"):
+    def __init__(self, url: str, status_code: int, text: str, reason: str = "OK", headers=None):
         self.url = url
         self.status_code = status_code
         self.text = text
+        self.content = text.encode("utf-8")
         self.reason = reason
+        self.headers = headers or {}
 
 
 HTML_HOME = """
@@ -77,7 +79,7 @@ def build_mock_public_result():
             return by_url["https://site.test"]
         return by_url[key]
 
-    with patch("requests.Session.get", side_effect=fake_get):
+    with patch("app.tools.site_pro.adapter.sample_site_urls_from_sitemaps", return_value={"sample_urls": [], "sample_set": set(), "notes": [], "source": None, "root_sitemaps": [], "sitemaps_scanned": 0, "urls_discovered": 0, "truncated": False}), patch("requests.Session.get", side_effect=fake_get):
         normalized = adapter.run("https://site.test", mode="quick", max_pages=10)
         return adapter.to_public_results(normalized)
 
@@ -196,7 +198,7 @@ class SiteProAdapterTests(unittest.TestCase):
                 return by_url["https://site.test"]
             return by_url[key]
 
-        with patch("requests.Session.get", side_effect=fake_get):
+        with patch("app.tools.site_pro.adapter.sample_site_urls_from_sitemaps", return_value={"sample_urls": [], "sample_set": set(), "notes": [], "source": None, "root_sitemaps": [], "sitemaps_scanned": 0, "urls_discovered": 0, "truncated": False}), patch("requests.Session.get", side_effect=fake_get):
             normalized = adapter.run(
                 "https://site.test",
                 mode="quick",
@@ -220,13 +222,14 @@ class SiteProAdapterTests(unittest.TestCase):
         def fake_get(url, timeout=0, allow_redirects=True):
             return by_url["https://site.test"]
 
-        with patch("requests.Session.get", side_effect=fake_get):
+        with patch("app.tools.site_pro.adapter.sample_site_urls_from_sitemaps", return_value={"sample_urls": [], "sample_set": set(), "notes": [], "source": None, "root_sitemaps": [], "sitemaps_scanned": 0, "urls_discovered": 0, "truncated": False}), patch("requests.Session.get", side_effect=fake_get):
             normalized = adapter.run("https://site.test", mode="quick", max_pages=1)
             public = adapter.to_public_results(normalized)
 
         row = public["pages"][0]
         self.assertGreaterEqual(int(row.get("structured_errors_count") or 0), 1)
         self.assertIn("product_missing_price", row.get("structured_error_codes") or [])
+        self.assertIn("Product", row.get("structured_types") or [])
 
     def test_respects_max_pages_limit(self):
         adapter = SiteAuditProAdapter()
@@ -242,11 +245,61 @@ class SiteProAdapterTests(unittest.TestCase):
                 return by_url["https://site.test"]
             return by_url[key]
 
-        with patch("requests.Session.get", side_effect=fake_get):
+        with patch("app.tools.site_pro.adapter.sample_site_urls_from_sitemaps", return_value={"sample_urls": [], "sample_set": set(), "notes": [], "source": None, "root_sitemaps": [], "sitemaps_scanned": 0, "urls_discovered": 0, "truncated": False}), patch("requests.Session.get", side_effect=fake_get):
             normalized = adapter.run("https://site.test", mode="quick", max_pages=2)
             public = adapter.to_public_results(normalized)
 
         self.assertLessEqual(public["summary"]["total_pages"], 2)
+
+    def test_unique_page_duplicate_counts_are_zero(self):
+        public = build_mock_public_result()
+
+        home = next(page for page in public["pages"] if page["url"] == "https://site.test")
+
+        self.assertEqual(home["duplicate_title_count"], 0)
+        self.assertEqual(home["duplicate_description_count"], 0)
+
+    def test_sitemap_seed_marks_in_sitemap_and_crawls_sitemap_only_url(self):
+        adapter = SiteAuditProAdapter()
+        html_tools = """
+<html><head><title>Tools</title><meta name="description" content="Tools page"></head>
+<body><h1>Tools</h1><p>SEO tools overview page.</p></body></html>
+"""
+        by_url = {
+            "https://site.test": _MockResponse("https://site.test", 200, HTML_HOME),
+            "https://site.test/about": _MockResponse("https://site.test/about", 200, HTML_ABOUT),
+            "https://site.test/blog": _MockResponse("https://site.test/blog", 200, HTML_BLOG),
+            "https://site.test/tools": _MockResponse("https://site.test/tools", 200, html_tools),
+        }
+
+        def fake_get(url, timeout=0, allow_redirects=True):
+            key = url.rstrip("/")
+            if key == "https://site.test":
+                return by_url["https://site.test"]
+            return by_url[key]
+
+        sitemap_scope = {
+            "sample_urls": ["https://site.test/tools"],
+            "sample_set": {"https://site.test/tools", "https://site.test"},
+            "notes": [],
+            "source": "robots.txt",
+            "root_sitemaps": ["https://site.test/sitemap.xml"],
+            "sitemaps_scanned": 1,
+            "urls_discovered": 2,
+            "truncated": False,
+        }
+
+        with patch("app.tools.site_pro.adapter.sample_site_urls_from_sitemaps", return_value=sitemap_scope), patch("requests.Session.get", side_effect=fake_get):
+            normalized = adapter.run("https://site.test", mode="quick", max_pages=10)
+            public = adapter.to_public_results(normalized)
+
+        page_urls = {page["url"] for page in public["pages"]}
+        self.assertIn("https://site.test/tools", page_urls)
+        tools_page = next(page for page in public["pages"] if page["url"] == "https://site.test/tools")
+        home_page = next(page for page in public["pages"] if page["url"] == "https://site.test")
+        self.assertTrue(tools_page["in_sitemap"])
+        self.assertEqual(tools_page["sitemap_source"], "robots.txt")
+        self.assertTrue(home_page["in_sitemap"])
 
     def test_health_score_tolerates_missing_response_time(self):
         adapter = SiteAuditProAdapter()
@@ -357,6 +410,7 @@ class SiteProAdapterTests(unittest.TestCase):
                 "semantic_suggestions",
                 "broken_links",
                 "image_analysis",
+                "sitemap_scope",
                 "notes",
             },
         )

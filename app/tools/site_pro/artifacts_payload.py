@@ -18,6 +18,7 @@ def build_artifacts_payload(
     broken_links_data: Dict[str, Any],
     image_analysis_data: Dict[str, Any],
     homepage_row: NormalizedSiteAuditRow | None,
+    sitemap_scope: Dict[str, Any],
 ) -> Dict[str, Any]:
     """Build stable artifacts payload without changing contract."""
     crawl_budget_summary = {
@@ -53,11 +54,13 @@ def build_artifacts_payload(
         "semantic_suggestions": semantic_suggestions,
         "broken_links": broken_links_data,
         "image_analysis": image_analysis_data,
+        "sitemap_scope": sitemap_scope,
         "notes": [
             "Lightweight crawl adapter is active",
             "Full seopro calculation parity is pending",
         ],
     }
+    artifacts["notes"].extend([str(note) for note in (sitemap_scope.get("notes") or []) if str(note).strip()])
     if effective_batch_mode:
         artifacts["notes"].append("Batch URL mode active: only provided URLs were scanned")
 

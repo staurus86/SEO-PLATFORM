@@ -38,6 +38,8 @@ class SiteAuditProResult(BaseModel):
 class NormalizedSiteAuditRow(BaseModel):
     url: str
     final_url: Optional[str] = None
+    in_sitemap: bool = False
+    sitemap_source: Optional[str] = None
     status_code: Optional[int] = None
     status_line: Optional[str] = None
     response_time_ms: Optional[int] = None

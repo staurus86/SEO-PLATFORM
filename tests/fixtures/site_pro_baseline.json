@@ -40,8 +40,8 @@
   "pages": {
     "https://site.test": {
       "ai_markers_count": 0,
-      "duplicate_description_count": 1,
-      "duplicate_title_count": 1,
+      "duplicate_description_count": 0,
+      "duplicate_title_count": 0,
       "health_score": 63.5,
       "link_quality_score": 76.0,
       "topic_label": "optimization",
@@ -57,7 +57,7 @@
       "weak_anchor_ratio": 0.0
     },
     "https://site.test/blog": {
-      "ai_markers_count": 3,
+      "ai_markers_count": 0,
       "duplicate_description_count": 2,
       "duplicate_title_count": 2,
       "health_score": 56.2,
