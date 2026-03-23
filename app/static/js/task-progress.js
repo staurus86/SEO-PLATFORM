@@ -861,6 +861,23 @@ function initChartsForTool(taskType, result) {
         }
 
         if (taskType === 'core_web_vitals') {
+            if (r.combined) {
+                const mobileMetrics = r.mobile?.metrics || {};
+                const desktopMetrics = r.desktop?.metrics || {};
+                const mobileLcp = Number(mobileMetrics.lcp?.field_value_ms ?? mobileMetrics.lcp?.lab_value_ms ?? 0);
+                const desktopLcp = Number(desktopMetrics.lcp?.field_value_ms ?? desktopMetrics.lcp?.lab_value_ms ?? 0);
+                const mobileScore = Number(r.mobile?.summary?.performance_score ?? 0);
+                const desktopScore = Number(r.desktop?.summary?.performance_score ?? 0);
+                if (mobileLcp > 0 || desktopLcp > 0) {
+                    createBarChart('ds-chart-cwv-metrics', ['Mobile LCP', 'Desktop LCP'],
+                        [{data: [Math.round(mobileLcp), Math.round(desktopLcp)], label: 'LCP (ms)', color: ['#0ea5e9','#1d4ed8']}]);
+                }
+                if (mobileScore > 0 || desktopScore > 0) {
+                    createBarChart('ds-chart-cwv-score', ['Mobile', 'Desktop'],
+                        [{data: [mobileScore, desktopScore], label: 'Performance', color: ['#22c55e','#0f766e']}]);
+                }
+                return;
+            }
             const metrics = r.metrics || {};
             const lcp = Number(metrics.lcp?.field_value_ms ?? metrics.lcp?.lab_value_ms ?? 0);
             const inp = Number(metrics.inp?.field_value_ms ?? metrics.inp?.lab_value_ms ?? 0);
@@ -3498,6 +3515,98 @@ function generateCoreWebVitalsHTML(result) {
             </button>
         </div>
     `;
+
+    if (r.combined) {
+        const mobile = r.mobile || {};
+        const desktop = r.desktop || {};
+        const mobileSummary = mobile.summary || {};
+        const desktopSummary = desktop.summary || {};
+        const mobileMetrics = mobile.metrics || {};
+        const desktopMetrics = desktop.metrics || {};
+        const comparison = r.comparison || {};
+        const combinedRecommendations = [
+            ...(Array.isArray(mobile.recommendations) ? mobile.recommendations : []),
+            ...(Array.isArray(desktop.recommendations) ? desktop.recommendations : []),
+        ].slice(0, 10);
+
+        const renderDeviceCard = (label, payload) => {
+            const summaryData = payload.summary || {};
+            const metricsData = payload.metrics || {};
+            const payloadFieldData = payload.field_data || {};
+            const payloadHasFieldData = Boolean(payloadFieldData.is_available);
+            const deviceCwvLabel = !payloadHasFieldData && String(summaryData.core_web_vitals_status || 'unknown').toLowerCase() === 'unknown'
+                ? 'NO FIELD DATA'
+                : statusLabel(summaryData.core_web_vitals_status);
+            const deviceCwvClass = !payloadHasFieldData && String(summaryData.core_web_vitals_status || 'unknown').toLowerCase() === 'unknown'
+                ? 'border-sky-200 bg-sky-50 text-sky-800'
+                : statusClass(summaryData.core_web_vitals_status);
+
+            return `
+                <div class="bg-white rounded-xl shadow-md p-6 border border-slate-200">
+                    <div class="flex items-start justify-between gap-3">
+                        <div>
+                            <h4 class="font-semibold text-slate-900">${escapeHtml(label)}</h4>
+                            <p class="mt-1 text-sm text-slate-500">${payloadHasFieldData ? 'Field data available' : 'Field data unavailable, showing lab metrics'}</p>
+                        </div>
+                        <span class="inline-flex px-2 py-1 rounded border text-xs font-semibold ${deviceCwvClass}">${escapeHtml(deviceCwvLabel)}</span>
+                    </div>
+                    <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mt-4">
+                        ${buildMetricCard('Performance', fmtInt(summaryData.performance_score))}
+                        ${buildMetricCard('Health Index', fmtInt(summaryData.health_index))}
+                        ${buildMetricCard('Risk', escapeHtml(String(summaryData.risk_level || 'unknown').toUpperCase()))}
+                        ${buildMetricCard('Grade', escapeHtml(summaryData.grade || '-'))}
+                    </div>
+                    <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mt-4">
+                        <div class="rounded-lg border p-3 ${statusClass(metricsData.lcp?.status)}">LCP: <span class="font-semibold">${escapeHtml(formatMetric('lcp', metricsData.lcp?.field_value_ms ?? metricsData.lcp?.lab_value_ms))}</span> ms</div>
+                        <div class="rounded-lg border p-3 ${statusClass(metricsData.inp?.status)}">INP: <span class="font-semibold">${escapeHtml(formatMetric('inp', metricsData.inp?.field_value_ms ?? metricsData.inp?.lab_value_ms))}</span> ms</div>
+                        <div class="rounded-lg border p-3 ${statusClass(metricsData.cls?.status)}">CLS: <span class="font-semibold">${escapeHtml(formatMetric('cls', metricsData.cls?.field_value ?? metricsData.cls?.lab_value))}</span></div>
+                        <div class="rounded-lg border p-3 ${statusClass(metricsData.fcp?.status)}">FCP: <span class="font-semibold">${escapeHtml(formatMetric('fcp', metricsData.fcp?.lab_value_ms))}</span> ms</div>
+                    </div>
+                </div>
+            `;
+        };
+
+        return `
+            <div class="space-y-6 cwvpro-results">
+                ${buildToolHeader({
+                    gradient: 'from-sky-700 via-blue-700 to-indigo-700',
+                    label: 'Core Web Vitals Scanner',
+                    title: 'Core Web Vitals',
+                    subtitle: resultData.url || r.url || '',
+                    score: Number.isFinite(Number(comparison.performance_desktop ?? desktopSummary.performance_score))
+                        ? Number(comparison.performance_desktop ?? desktopSummary.performance_score)
+                        : null,
+                    scoreLabel: 'Desktop',
+                    scoreGrade: desktopSummary.grade || null,
+                    badges: [
+                        { cls: 'bg-white/10 border border-white/20 text-white/90', text: 'Combined: Mobile + Desktop' },
+                        { cls: 'bg-white/10 border border-white/20 text-white/90', text: `Mobile ${fmtInt(comparison.performance_mobile ?? mobileSummary.performance_score)}` },
+                        { cls: 'bg-white/10 border border-white/20 text-white/90', text: `Desktop ${fmtInt(comparison.performance_desktop ?? desktopSummary.performance_score)}` },
+                    ],
+                    metaLines: [
+                        `Mobile LCP: ${formatMetric('lcp', mobileMetrics.lcp?.field_value_ms ?? mobileMetrics.lcp?.lab_value_ms)} ms`,
+                        `Desktop LCP: ${formatMetric('lcp', desktopMetrics.lcp?.field_value_ms ?? desktopMetrics.lcp?.lab_value_ms)} ms`,
+                        'Charts and cards are split by device for combined mode',
+                    ],
+                    actionButtons: exportButtons,
+                })}
+
+                <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+                    ${buildMetricCard('Mobile Performance', fmtInt(comparison.performance_mobile ?? mobileSummary.performance_score))}
+                    ${buildMetricCard('Desktop Performance', fmtInt(comparison.performance_desktop ?? desktopSummary.performance_score))}
+                    ${buildMetricCard('Mobile CWV', (!mobile.field_data?.is_available && String(mobileSummary.core_web_vitals_status || 'unknown').toLowerCase() === 'unknown') ? 'NO FIELD DATA' : statusLabel(mobileSummary.core_web_vitals_status))}
+                    ${buildMetricCard('Desktop CWV', (!desktop.field_data?.is_available && String(desktopSummary.core_web_vitals_status || 'unknown').toLowerCase() === 'unknown') ? 'NO FIELD DATA' : statusLabel(desktopSummary.core_web_vitals_status))}
+                </div>
+
+                <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                    ${renderDeviceCard('Mobile', mobile)}
+                    ${renderDeviceCard('Desktop', desktop)}
+                </div>
+
+                ${buildRecommendations(combinedRecommendations)}
+            </div>
+        `;
+    }
 
     if (mode === 'competitor') {
         const competitors = Array.isArray(r.competitors) ? r.competitors : (sites.length > 1 ? sites.slice(1) : []);
