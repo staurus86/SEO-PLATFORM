@@ -106,6 +106,54 @@ class CoreWebVitalsRouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ctx.exception.status_code, 422)
         self.assertIn("минимум 2 URL", str(ctx.exception.detail))
 
+    async def test_router_competitor_batch_task_completes(self):
+        from app.api.routers.cwv import CoreWebVitalsRequest, create_core_web_vitals
+        from app.api.routers._task_store import get_task_result
+
+        def fake_scan(url, strategy="desktop", use_proxy=False, combined=False):
+            return {
+                "task_type": "core_web_vitals",
+                "url": url,
+                "results": {
+                    "strategy": strategy,
+                    "source": "pagespeed_insights_api",
+                    "summary": {
+                        "performance_score": 90 if "example.com" in url else 95,
+                        "core_web_vitals_status": "good",
+                    },
+                    "metrics": {
+                        "lcp": {"field_value_ms": 1800},
+                        "inp": {"field_value_ms": 120},
+                        "cls": {"field_value": 0.03},
+                    },
+                    "categories": {"performance": 90},
+                    "diagnostics": {},
+                    "analysis": {"risk_level": "low"},
+                    "opportunities": [],
+                    "recommendations": [],
+                    "action_plan": [],
+                },
+            }
+
+        background = BackgroundTasks()
+        payload = CoreWebVitalsRequest(
+            url="example.com",
+            scan_mode="batch",
+            competitor_mode=True,
+            batch_urls=["example.com", "wikipedia.org"],
+        )
+
+        with patch("app.api.routers.cwv.check_core_web_vitals", side_effect=fake_scan):
+            response = await create_core_web_vitals(payload, background)
+            self.assertEqual(response.get("status"), "PENDING")
+            self.assertEqual(len(background.tasks), 1)
+            background.tasks[0].func(*background.tasks[0].args, **background.tasks[0].kwargs)
+
+        task_id = str(response.get("task_id"))
+        stored = get_task_result(task_id)
+        self.assertEqual((stored or {}).get("status"), "SUCCESS")
+        self.assertEqual((((stored or {}).get("result") or {}).get("results") or {}).get("mode"), "competitor")
+
     async def test_competitor_aggregator_builds_comparison_mode(self):
         if importlib.util.find_spec("multipart") is None:
             self.skipTest("python-multipart is not installed in this environment")

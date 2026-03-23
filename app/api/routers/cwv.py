@@ -4,7 +4,7 @@ Core Web Vitals router.
 import math
 import re
 from datetime import datetime, timezone
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Tuple
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException
 from pydantic import field_validator
