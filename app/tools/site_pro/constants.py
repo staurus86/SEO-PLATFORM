@@ -36,13 +36,9 @@ BOILERPLATE_PATTERNS = (
     r"\u043a\u043e\u043d\u0442\u0430\u043a\u0442\u044b",
     r"\u043f\u043e\u0434\u043f\u0438\u0441\u0430\u0442\u044c\u0441\u044f",
 )
-AI_TECH_MARKERS = (
-    "ai",
-    "chatgpt",
-    "generated",
-    "llm",
-    "neural",
-)
+# Explicit technology names are intentionally excluded from AI writing markers.
+# They indicate topic/domain, not necessarily machine-written phrasing.
+AI_TECH_MARKERS: tuple[str, ...] = ()
 # Additional modern LLM-style phrases (RU/EN) frequently seen in generated text.
 AI_LLM_STYLE_MARKERS = (
     "as an ai language model",

@@ -107,6 +107,31 @@ class SiteProAdapterTests(unittest.TestCase):
         self.assertGreaterEqual(count, 4)
         self.assertTrue(any(m == "as an ai language model" for m in markers))
 
+    def test_detect_ai_markers_ignores_tech_names_and_abbreviations(self):
+        adapter = SiteAuditProAdapter()
+        text = (
+            "AI и LLM применяются в продукте. Мы интегрировали ChatGPT в саппорт. "
+            "Это описание технологий, а не стилистический AI-маркер."
+        )
+
+        count, markers = adapter._detect_ai_markers(text)
+
+        self.assertEqual(count, 0)
+        self.assertEqual(markers, [])
+
+    def test_detect_ai_markers_deduplicates_and_prefers_phrase_level_hits(self):
+        adapter = SiteAuditProAdapter()
+        text = (
+            "Следовательно, решение готово. Следовательно, можно сделать вывод. "
+            "Важно отметить, что в современном мире это встречается часто."
+        )
+
+        count, markers = adapter._detect_ai_markers(text)
+
+        self.assertGreaterEqual(count, 3)
+        self.assertEqual(markers.count("следовательно"), 1)
+        self.assertIn("важно отметить", " | ".join(markers))
+
     def test_pipeline_and_duplicates(self):
         public = build_mock_public_result()
 

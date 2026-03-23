@@ -7,6 +7,15 @@ from urllib.parse import urlparse
 
 from .constants import AI_LLM_STYLE_MARKERS, AI_PHRASE_MARKERS, AI_TECH_MARKERS
 
+AI_STYLE_REGEX_MARKERS = (
+    r"\b(?:важно|необходимо|следует|стоит)\s+(?:отметить|подчеркнуть|понимать)\b",
+    r"\b(?:таким образом|следовательно|подводя итог|в заключение|резюмируя|итак)\b",
+    r"\b(?:в современном мире|на сегодняшний день|в настоящее время)\b",
+    r"\b(?:как видно|как можно видеть|как нетрудно заметить)\b",
+    r"\b(?:it is important to note that|it is worth noting that|in summary|to sum up)\b",
+    r"\b(?:as an ai language model|as an ai assistant|i hope this helps|feel free to ask)\b",
+)
+
 
 def _ai_marker_sample(text: str, markers: List[str]) -> str:
     raw = text or ""
@@ -36,18 +45,31 @@ def _detect_ai_markers(text: str) -> Tuple[int, List[str]]:
     if not text_lower:
         return 0, []
     found_markers: List[str] = []
+    seen: set[str] = set()
+
+    def add_marker(marker: str) -> None:
+        token = str(marker or "").strip().lower()
+        if not token or token in seen:
+            return
+        seen.add(token)
+        found_markers.append(token)
 
     for phrase in AI_PHRASE_MARKERS:
         if phrase and phrase in text_lower:
-            found_markers.append(phrase)
+            add_marker(phrase)
 
     for phrase in AI_LLM_STYLE_MARKERS:
         if phrase and phrase in text_lower:
-            found_markers.append(phrase)
+            add_marker(phrase)
+
+    for pattern in AI_STYLE_REGEX_MARKERS:
+        match = re.search(pattern, text_lower, flags=re.I)
+        if match:
+            add_marker(match.group(0))
 
     for marker in AI_TECH_MARKERS:
         if re.search(rf"\b{re.escape(marker)}\b", text_lower):
-            found_markers.append(marker)
+            add_marker(marker)
 
     return len(found_markers), found_markers[:10]
 
