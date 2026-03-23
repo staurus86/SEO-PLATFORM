@@ -69,6 +69,27 @@ class CoreWebVitalsRequest(URLModel):
         token = str(value or "").strip().lower()
         return token in {"1", "true", "yes", "on"}
 
+    @field_validator("url", mode="before")
+    @classmethod
+    def _normalize_url(cls, value):
+        if value in (None, ""):
+            return ""
+        normalized = _normalize_http_input(str(value or ""))
+        if not normalized:
+            raise ValueError("Введите корректный URL сайта (домен или http/https URL).")
+        return normalized
+
+    @field_validator("batch_urls", mode="after")
+    @classmethod
+    def _normalize_batch_urls_http(cls, value):
+        normalized_urls: List[str] = []
+        for item in value or []:
+            normalized = _normalize_http_input(str(item or ""))
+            if not normalized:
+                raise ValueError(f"Некорректный URL в batch-списке: {item}")
+            normalized_urls.append(normalized)
+        return normalized_urls
+
 
 def _build_core_web_vitals_batch_result(
     *,

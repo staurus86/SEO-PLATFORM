@@ -5,6 +5,23 @@ from fastapi import BackgroundTasks
 
 
 class CoreWebVitalsRouteTests(unittest.IsolatedAsyncioTestCase):
+    def test_router_request_normalizes_plain_domain_url(self):
+        from app.api.routers.cwv import CoreWebVitalsRequest
+
+        payload = CoreWebVitalsRequest(url="example.com", strategy="desktop")
+
+        self.assertEqual(payload.url, "https://example.com")
+
+    def test_router_request_normalizes_batch_urls_without_scheme(self):
+        from app.api.routers.cwv import CoreWebVitalsRequest
+
+        payload = CoreWebVitalsRequest(
+            scan_mode="batch",
+            batch_urls=["example.com", "https://example.org/path"],
+        )
+
+        self.assertEqual(payload.batch_urls, ["https://example.com", "https://example.org/path"])
+
     async def test_route_queues_single_task(self):
         if importlib.util.find_spec("multipart") is None:
             self.skipTest("python-multipart is not installed in this environment")
