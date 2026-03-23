@@ -28,6 +28,8 @@ class UnifiedUiGuards(unittest.TestCase):
         self.assertIn("function generateUnifiedAuditHTML(result)", unified_js)
         self.assertIn("const cwvEntry = toolResults.cwv || toolResults.core_web_vitals || {}", unified_js)
         self.assertIn("function downloadUnifiedAuditExport(format)", unified_js)
+        self.assertIn("NO FIELD DATA", main_js)
+        self.assertIn("Field data: not available, showing lab metrics", main_js)
         self.assertIn('/static/js/task-progress-runtime.js?v={{ app_version }}-{{ task_id }}', template)
         self.assertIn('/static/js/task-progress-batch.js?v={{ app_version }}-{{ task_id }}', template)
         self.assertIn('/static/js/task-progress-unified.js?v={{ app_version }}-{{ task_id }}', template)

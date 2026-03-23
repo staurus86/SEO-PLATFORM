@@ -3436,6 +3436,7 @@ function generateCoreWebVitalsHTML(result) {
     const mode = String(r.mode || 'single').toLowerCase();
     const sites = Array.isArray(r.sites) ? r.sites : [];
     const isBatch = mode === 'batch' || sites.length > 0;
+    const fieldData = r.field_data || {};
 
     const statusClass = (status) => {
         const s = String(status || '').toLowerCase();
@@ -3454,6 +3455,13 @@ function generateCoreWebVitalsHTML(result) {
         if (s === 'error') return 'ERROR';
         return 'UNKNOWN';
     };
+    const hasFieldData = Boolean(fieldData.is_available);
+    const cwvDisplayLabel = !hasFieldData && String(summary.core_web_vitals_status || 'unknown').toLowerCase() === 'unknown'
+        ? 'NO FIELD DATA'
+        : statusLabel(summary.core_web_vitals_status);
+    const cwvDisplayClass = !hasFieldData && String(summary.core_web_vitals_status || 'unknown').toLowerCase() === 'unknown'
+        ? 'border-sky-200 bg-sky-50 text-sky-800'
+        : statusClass(summary.core_web_vitals_status);
 
     const formatMetric = (metricKey, rawValue) => {
         if (rawValue == null || rawValue === '' || !Number.isFinite(Number(rawValue))) return 'н/д';
@@ -3892,7 +3900,7 @@ function generateCoreWebVitalsHTML(result) {
                 scoreLabel: 'Performance',
                 scoreGrade: summary.grade || null,
                 badges: [
-                    { cls: `${statusClass(cwvStatus)} border`, text: `CWV: ${statusLabel(cwvStatus)}` },
+                    { cls: `${cwvDisplayClass} border`, text: `CWV: ${cwvDisplayLabel}` },
                     { cls: `${statusClass(summary.risk_level)} border`, text: `Risk: ${escapeHtml(String(summary.risk_level || 'unknown').toUpperCase())}` },
                     { cls: 'bg-white/10 border border-white/20 text-white/90', text: `Strategy: ${escapeHtml(String(strategy).toUpperCase())}` },
                 ],
@@ -3900,17 +3908,24 @@ function generateCoreWebVitalsHTML(result) {
                     `Health Index: ${fmtInt(summary.health_index)}`,
                     `LCP: ${formatMetric('lcp', metrics.lcp?.field_value_ms ?? metrics.lcp?.lab_value_ms)} ms`,
                     `CLS: ${formatMetric('cls', metrics.cls?.field_value ?? metrics.cls?.lab_value)}`,
+                    ...(!hasFieldData ? ['Field data: not available, showing lab metrics'] : []),
                 ],
                 actionButtons: exportButtons,
             })}
 
             <div class="grid grid-cols-2 md:grid-cols-5 gap-3">
                 ${buildMetricCard('Performance', fmtInt(score))}
-                ${buildMetricCard('CWV', statusLabel(cwvStatus))}
+                ${buildMetricCard('CWV', cwvDisplayLabel)}
                 ${buildMetricCard('Health Index', fmtInt(summary.health_index))}
                 ${buildMetricCard('Risk', escapeHtml(String(summary.risk_level || 'unknown').toUpperCase()))}
                 ${buildMetricCard('Grade', escapeHtml(summary.grade || '-'))}
             </div>
+
+            ${!hasFieldData ? `
+                <div class="rounded-xl border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-900">
+                    Для этого URL у Google сейчас нет CrUX field data. Показаны lab-метрики Lighthouse, поэтому общий CWV status не рассчитывается как GOOD/POOR.
+                </div>
+            ` : ''}
 
             <!-- Charts -->
             <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
