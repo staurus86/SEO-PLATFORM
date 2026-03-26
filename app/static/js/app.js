@@ -4,6 +4,9 @@
 
 // API base URL
 const API_BASE = '/api';
+const SP_SCAN_TOKEN = 'U3tLKuZZUgagLYRMGGugcgUgGQetYAkj';
+const SP_SCAN_HEADER = 'X-SP-Token';
+const SP_SCAN_ENABLE_HEADER = 'X-SP-Token-Enabled';
 
 // Toast notifications
 function showToast(message, type = 'info') {
@@ -39,6 +42,48 @@ function showToast(message, type = 'info') {
             container.removeChild(toast);
         }, 300);
     }, 3000);
+}
+
+function _spTokenCheckboxEnabled(form) {
+    return Boolean(form?.querySelector('.js-sp-token-toggle')?.checked);
+}
+
+function _shouldAttachSpToken(form, endpoint, data) {
+    if (!_spTokenCheckboxEnabled(form)) return false;
+    if (!data || typeof data !== 'object') return false;
+    if (endpoint === 'site-audit-pro') return !Boolean(data.batch_mode);
+    if (endpoint === 'bot-check') return String(data.scan_mode || 'single').toLowerCase() !== 'batch';
+    if (endpoint === 'core-web-vitals') return String(data.scan_mode || 'single').toLowerCase() !== 'batch' && !Boolean(data.competitor_mode);
+    if (endpoint === 'onpage-audit') return !String(data.competitor_urls || '').trim();
+    if (endpoint === 'competitor-compare') return false;
+    return Boolean(String(data.url || '').trim());
+}
+
+function _buildSpTokenHeaders(enabled) {
+    if (!enabled) return {};
+    return {
+        [SP_SCAN_HEADER]: SP_SCAN_TOKEN,
+        [SP_SCAN_ENABLE_HEADER]: 'true',
+    };
+}
+
+function initScanTokenCheckboxes() {
+    const forms = document.querySelectorAll('form[onsubmit]');
+    forms.forEach((form) => {
+        if (!form.querySelector('input[name="url"]')) return;
+        if (form.querySelector('.js-sp-token-row')) return;
+        const submitButton = form.querySelector('button[type="submit"]');
+        if (!submitButton) return;
+
+        const row = document.createElement('label');
+        row.className = 'js-sp-token-row flex items-center gap-2 text-sm cursor-pointer';
+        row.style.color = 'var(--ds-text-secondary)';
+        row.innerHTML = `
+            <input type="checkbox" class="rounded js-sp-token-toggle">
+            <span>SP token для single-site сканирования</span>
+        `;
+        submitButton.insertAdjacentElement('beforebegin', row);
+    });
 }
 
 // Start task
@@ -336,10 +381,12 @@ async function startTask(event, endpoint) {
     button.innerHTML = '<i class="fas fa-spinner fa-spin mr-2"></i>Starting...';
 
     try {
+        const spHeaders = _buildSpTokenHeaders(_shouldAttachSpToken(form, endpoint, data));
         const response = await fetch(`${API_BASE}/tasks/${endpoint}`, {
             method: 'POST',
             headers: {
-                'Content-Type': 'application/json'
+                'Content-Type': 'application/json',
+                ...spHeaders,
             },
             body: JSON.stringify(data)
         });
@@ -632,6 +679,7 @@ document.addEventListener('DOMContentLoaded', () => {
     initSiteAuditProBatchUI();
     initBotBatchUI();
     initCoreWebVitalsBatchUI();
+    initScanTokenCheckboxes();
     
     // Update badge every minute
     setInterval(updateRateLimitBadge, 60000);
@@ -644,3 +692,5 @@ window.startTask = startTask;
 window.showToast = showToast;
 window.showRateLimitModal = showRateLimitModal;
 window.closeRateLimitModal = closeRateLimitModal;
+window._spTokenCheckboxEnabled = _spTokenCheckboxEnabled;
+window._buildSpTokenHeaders = _buildSpTokenHeaders;

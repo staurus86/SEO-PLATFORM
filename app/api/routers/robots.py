@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any, Union, Tuple
 from urllib.parse import urljoin, urlparse
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
 from pydantic import BaseModel, field_validator
 
 from app.validators import URLModel, normalize_http_input as _normalize_http_input
@@ -2757,7 +2757,7 @@ async def _discover_sitemap_urls_async(site_url: str, timeout: int = 12) -> tupl
 # ============ API ENDPOINTS ============
 
 @router.post("/tasks/robots-check")
-async def create_robots_check(data: RobotsCheckRequest):
+async def create_robots_check(data: RobotsCheckRequest, request: Request):
     """Full robots.txt analysis"""
     url = _normalize_http_input(str(data.url or ""))
     if not url:
@@ -2765,10 +2765,14 @@ async def create_robots_check(data: RobotsCheckRequest):
     
     print(f"[API] Full robots.txt analysis for: {url}")
     
-    if data.use_proxy:
-        result = await check_robots_full_async(url, use_proxy=True)
-    else:
-        result = await check_robots_full_async(url)
+    from app.core.scan_token import capture_scan_token_from_request, scan_token_context
+
+    scan_token = capture_scan_token_from_request(request)
+    with scan_token_context(scan_token):
+        if data.use_proxy:
+            result = await check_robots_full_async(url, use_proxy=True)
+        else:
+            result = await check_robots_full_async(url)
     task_id = f"robots-{datetime.now().timestamp()}"
     create_task_result(task_id, "robots_check", url, result)
     
@@ -2781,7 +2785,7 @@ async def create_robots_check(data: RobotsCheckRequest):
 
 
 @router.post("/tasks/sitemap-validate")
-async def create_sitemap_validate(data: SitemapValidateRequest):
+async def create_sitemap_validate(data: SitemapValidateRequest, request: Request):
     """Full sitemap validation"""
     raw_input = str(data.url or "").strip()
     normalized_input = _normalize_http_input(raw_input)
@@ -2809,10 +2813,14 @@ async def create_sitemap_validate(data: SitemapValidateRequest):
         f"sitemaps={len(target_sitemap_urls)}, source={discovery_source}"
     )
 
-    if data.use_proxy:
-        result = await check_sitemap_full_async(target_sitemap_urls, use_proxy=True)
-    else:
-        result = await check_sitemap_full_async(target_sitemap_urls)
+    from app.core.scan_token import capture_scan_token_from_request, scan_token_context
+
+    scan_token = capture_scan_token_from_request(request)
+    with scan_token_context(scan_token):
+        if data.use_proxy:
+            result = await check_sitemap_full_async(target_sitemap_urls, use_proxy=True)
+        else:
+            result = await check_sitemap_full_async(target_sitemap_urls)
     if isinstance(result, dict):
         resolved_sitemap_url = target_sitemap_urls[0] if target_sitemap_urls else ""
         result["input_url"] = normalized_input
@@ -2841,27 +2849,31 @@ async def create_sitemap_validate(data: SitemapValidateRequest):
 
 
 @router.post("/tasks/bot-check")
-async def create_bot_check(data: BotCheckRequest):
+async def create_bot_check(data: BotCheckRequest, request: Request):
     """Full bot accessibility check"""
     url = data.url
     
     print(f"[API] Full bot check for: {url}")
     
-    result = check_bots_full(
-        url,
-        selected_bots=data.selected_bots,
-        bot_groups=data.bot_groups,
-        retry_profile=(data.retry_profile or "standard"),
-        criticality_profile=(data.criticality_profile or "balanced"),
-        sla_profile=(data.sla_profile or "standard"),
-        baseline_enabled=bool(data.baseline_enabled),
-        ai_block_expected=bool(data.ai_block_expected),
-        batch_mode=(str(data.scan_mode or "single").lower() == "batch"),
-        batch_urls=(data.batch_urls or []),
-        use_proxy=bool(data.use_proxy),
-        custom_bot_name=data.custom_bot_name,
-        custom_bot_ua=data.custom_bot_ua,
-    )
+    from app.core.scan_token import capture_scan_token_from_request, scan_token_context
+
+    scan_token = capture_scan_token_from_request(request)
+    with scan_token_context(scan_token):
+        result = check_bots_full(
+            url,
+            selected_bots=data.selected_bots,
+            bot_groups=data.bot_groups,
+            retry_profile=(data.retry_profile or "standard"),
+            criticality_profile=(data.criticality_profile or "balanced"),
+            sla_profile=(data.sla_profile or "standard"),
+            baseline_enabled=bool(data.baseline_enabled),
+            ai_block_expected=bool(data.ai_block_expected),
+            batch_mode=(str(data.scan_mode or "single").lower() == "batch"),
+            batch_urls=(data.batch_urls or []),
+            use_proxy=bool(data.use_proxy),
+            custom_bot_name=data.custom_bot_name,
+            custom_bot_ua=data.custom_bot_ua,
+        )
     task_id = f"bots-{datetime.now().timestamp()}"
     create_task_result(task_id, "bot_check", url, result)
     

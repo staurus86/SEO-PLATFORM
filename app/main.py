@@ -68,6 +68,7 @@ except Exception as e:
 try:
     logger.info("Importing app.config...")
     from app.config import settings
+    from app.core.scan_token import install_http_header_patches
     logger.info(f"[OK] Config loaded: PORT={settings.PORT}, HOST={settings.HOST}")
 except Exception as e:
     logger.error(f"[ERROR] Config import failed: {e}")
@@ -107,6 +108,8 @@ app = FastAPI(
     redoc_url="/api/redoc",
     lifespan=lifespan,
 )
+
+install_http_header_patches()
 
 
 # ---------------------------------------------------------------------------

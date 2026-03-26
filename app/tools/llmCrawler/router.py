@@ -24,6 +24,7 @@ from .queue import (
     inc_subject,
 )
 from .schemas import LlmCrawlerJobStatusResponse, LlmCrawlerRunRequest
+from app.core.scan_token import capture_scan_token_from_request, scan_token_context
 from fastapi.responses import HTMLResponse
 from fastapi.responses import Response
 
@@ -118,6 +119,7 @@ def _normalize_targets(payload: LlmCrawlerRunRequest) -> list[str]:
 async def run_llm_crawler(payload: LlmCrawlerRunRequest, request: Request) -> Dict[str, Any]:
     _ensure_feature_enabled(request)
     request_id = _request_id(request)
+    scan_token = capture_scan_token_from_request(request)
 
     limits_enabled = bool(getattr(settings, "LLM_CRAWLER_LIMITS_ENABLED", False))
     subject = request_subject(request)
@@ -179,34 +181,35 @@ async def run_llm_crawler(payload: LlmCrawlerRunRequest, request: Request) -> Di
             detail="LLM worker unavailable; please retry when worker is healthy",
         )
 
-    for idx, target_url in enumerate(targets):
-        _ensure_worker_available()
+    with scan_token_context(scan_token):
+        for idx, target_url in enumerate(targets):
+            _ensure_worker_available()
 
-        job_id = new_job_id()
-        try:
-            if limits_enabled:
-                concurrent = inc_subject(subject)
-                if concurrent > int(getattr(settings, "MAX_CONCURRENT_JOBS", 2) or 2):
-                    dec_subject(subject)
-                    raise HTTPException(
-                        status_code=429,
-                        detail={"message": "Too many concurrent jobs for subject"},
-                    )
-            job = create_job_record(
-                job_id=job_id,
-                request_id=request_id,
-                requested_url=target_url,
-                options=options,
-                subject=subject,
-                status_message="Queued",
-            )
-            enqueue_job(job)
-            job_ids.append(job_id)
-        except Exception as exc:
-            raise HTTPException(
-                status_code=503,
-                detail=f"LLM crawler temporarily unavailable: {exc}",
-            ) from exc
+            job_id = new_job_id()
+            try:
+                if limits_enabled:
+                    concurrent = inc_subject(subject)
+                    if concurrent > int(getattr(settings, "MAX_CONCURRENT_JOBS", 2) or 2):
+                        dec_subject(subject)
+                        raise HTTPException(
+                            status_code=429,
+                            detail={"message": "Too many concurrent jobs for subject"},
+                        )
+                job = create_job_record(
+                    job_id=job_id,
+                    request_id=request_id,
+                    requested_url=target_url,
+                    options=options,
+                    subject=subject,
+                    status_message="Queued",
+                )
+                enqueue_job(job)
+                job_ids.append(job_id)
+            except Exception as exc:
+                raise HTTPException(
+                    status_code=503,
+                    detail=f"LLM crawler temporarily unavailable: {exc}",
+                ) from exc
 
     return {"jobId": job_ids[0], "jobIds": job_ids, "total": len(job_ids), "status": "queued"}
 

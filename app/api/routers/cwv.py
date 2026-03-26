@@ -6,7 +6,7 @@ import re
 from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any, Tuple
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
 from pydantic import field_validator
 
 from app.validators import URLModel, normalize_http_input as _normalize_http_input
@@ -657,7 +657,7 @@ def _build_core_web_vitals_competitor_result(
 
 
 @router.post("/tasks/core-web-vitals")
-async def create_core_web_vitals(data: CoreWebVitalsRequest, background_tasks: BackgroundTasks):
+async def create_core_web_vitals(data: CoreWebVitalsRequest, background_tasks: BackgroundTasks, request: Request):
     """Run Core Web Vitals scan via PageSpeed Insights API (single, batch, competitor compare)."""
     strategy = str(data.strategy or "desktop").strip().lower()
     if strategy not in {"mobile", "desktop"}:
@@ -668,6 +668,9 @@ async def create_core_web_vitals(data: CoreWebVitalsRequest, background_tasks: B
     competitor_mode = bool(getattr(data, "competitor_mode", False))
     if competitor_mode:
         scan_mode = "batch"
+    from app.core.scan_token import capture_scan_token_from_request, scan_token_context
+
+    scan_token = capture_scan_token_from_request(request)
 
     max_batch_urls = 999
     raw_batch_urls = [str(item or "").strip() for item in (data.batch_urls or []) if str(item or "").strip()]
@@ -717,145 +720,146 @@ async def create_core_web_vitals(data: CoreWebVitalsRequest, background_tasks: B
         )
 
         def _run_core_web_vitals_batch_task() -> None:
-            total = len(normalized_urls)
-            sites: List[Dict[str, Any]] = []
-            source = "pagespeed_insights_api"
-            try:
-                update_task_state(
-                    task_id,
-                    status="RUNNING",
-                    progress=5,
-                    status_message=(
-                        "Подготовка конкурентного Core Web Vitals сравнения"
-                        if competitor_mode
-                        else "Подготовка batch Core Web Vitals сканирования"
-                    ),
-                    progress_meta={
-                        "processed_pages": 0,
-                        "total_pages": total,
-                        "queue_size": total,
-                        "current_url": normalized_urls[0] if normalized_urls else "",
-                        "competitor_mode": competitor_mode,
-                    },
-                )
-
-                for index, target_url in enumerate(normalized_urls, start=1):
-                    before_progress = 5 + int(((index - 1) / max(1, total)) * 85)
+            with scan_token_context(scan_token):
+                total = len(normalized_urls)
+                sites: List[Dict[str, Any]] = []
+                source = "pagespeed_insights_api"
+                try:
                     update_task_state(
                         task_id,
                         status="RUNNING",
-                        progress=min(95, max(5, before_progress)),
-                        status_message=f"Core Web Vitals: {index}/{total}",
+                        progress=5,
+                        status_message=(
+                            "Подготовка конкурентного Core Web Vitals сравнения"
+                            if competitor_mode
+                            else "Подготовка batch Core Web Vitals сканирования"
+                        ),
                         progress_meta={
-                            "processed_pages": index - 1,
+                            "processed_pages": 0,
                             "total_pages": total,
-                            "queue_size": max(0, total - index + 1),
-                            "current_url": target_url,
+                            "queue_size": total,
+                            "current_url": normalized_urls[0] if normalized_urls else "",
+                            "competitor_mode": competitor_mode,
                         },
                     )
 
-                    try:
-                        scan_result = check_core_web_vitals(target_url, strategy=strategy, use_proxy=bool(data.use_proxy))
-                        payload = scan_result.get("results", {}) if isinstance(scan_result, dict) else {}
-                        summary = payload.get("summary", {}) if isinstance(payload, dict) else {}
-                        metrics = payload.get("metrics", {}) if isinstance(payload, dict) else {}
-                        categories = payload.get("categories", {}) if isinstance(payload, dict) else {}
-                        diagnostics = payload.get("diagnostics", {}) if isinstance(payload, dict) else {}
-                        analysis = payload.get("analysis", {}) if isinstance(payload, dict) else {}
-                        opportunities = payload.get("opportunities", []) if isinstance(payload, dict) else []
-                        recommendations = payload.get("recommendations", []) if isinstance(payload, dict) else []
-                        action_plan = payload.get("action_plan", []) if isinstance(payload, dict) else []
-                        source = str(payload.get("source") or source)
-                        sites.append(
-                            {
-                                "url": str(scan_result.get("url") or target_url),
-                                "status": "success",
-                                "summary": summary,
-                                "metrics": metrics,
-                                "categories": categories,
-                                "diagnostics": diagnostics,
-                                "analysis": analysis,
-                                "opportunities": opportunities[:8] if isinstance(opportunities, list) else [],
-                                "recommendations": recommendations if isinstance(recommendations, list) else [],
-                                "action_plan": action_plan[:8] if isinstance(action_plan, list) else [],
-                                "checked_at": payload.get("checked_at"),
-                            }
-                        )
-                    except Exception as exc:
-                        sites.append(
-                            {
-                                "url": target_url,
-                                "status": "error",
-                                "error": str(exc),
-                            }
+                    for index, target_url in enumerate(normalized_urls, start=1):
+                        before_progress = 5 + int(((index - 1) / max(1, total)) * 85)
+                        update_task_state(
+                            task_id,
+                            status="RUNNING",
+                            progress=min(95, max(5, before_progress)),
+                            status_message=f"Core Web Vitals: {index}/{total}",
+                            progress_meta={
+                                "processed_pages": index - 1,
+                                "total_pages": total,
+                                "queue_size": max(0, total - index + 1),
+                                "current_url": target_url,
+                            },
                         )
 
-                    after_progress = 5 + int((index / max(1, total)) * 85)
-                    update_task_state(
-                        task_id,
-                        status="RUNNING",
-                        progress=min(95, max(5, after_progress)),
-                        status_message=f"Core Web Vitals: {index}/{total} завершено",
-                        progress_meta={
-                            "processed_pages": index,
-                            "total_pages": total,
-                            "queue_size": max(0, total - index),
-                            "current_url": target_url,
-                        },
-                    )
+                        try:
+                            scan_result = check_core_web_vitals(target_url, strategy=strategy, use_proxy=bool(data.use_proxy))
+                            payload = scan_result.get("results", {}) if isinstance(scan_result, dict) else {}
+                            summary = payload.get("summary", {}) if isinstance(payload, dict) else {}
+                            metrics = payload.get("metrics", {}) if isinstance(payload, dict) else {}
+                            categories = payload.get("categories", {}) if isinstance(payload, dict) else {}
+                            diagnostics = payload.get("diagnostics", {}) if isinstance(payload, dict) else {}
+                            analysis = payload.get("analysis", {}) if isinstance(payload, dict) else {}
+                            opportunities = payload.get("opportunities", []) if isinstance(payload, dict) else []
+                            recommendations = payload.get("recommendations", []) if isinstance(payload, dict) else []
+                            action_plan = payload.get("action_plan", []) if isinstance(payload, dict) else []
+                            source = str(payload.get("source") or source)
+                            sites.append(
+                                {
+                                    "url": str(scan_result.get("url") or target_url),
+                                    "status": "success",
+                                    "summary": summary,
+                                    "metrics": metrics,
+                                    "categories": categories,
+                                    "diagnostics": diagnostics,
+                                    "analysis": analysis,
+                                    "opportunities": opportunities[:8] if isinstance(opportunities, list) else [],
+                                    "recommendations": recommendations if isinstance(recommendations, list) else [],
+                                    "action_plan": action_plan[:8] if isinstance(action_plan, list) else [],
+                                    "checked_at": payload.get("checked_at"),
+                                }
+                            )
+                        except Exception as exc:
+                            sites.append(
+                                {
+                                    "url": target_url,
+                                    "status": "error",
+                                    "error": str(exc),
+                                }
+                            )
 
-                batch_payload = _build_core_web_vitals_batch_result(
-                    strategy=strategy,
-                    source=source,
-                    sites=sites,
-                )
-                if competitor_mode:
-                    batch_payload = _build_core_web_vitals_competitor_result(
+                        after_progress = 5 + int((index / max(1, total)) * 85)
+                        update_task_state(
+                            task_id,
+                            status="RUNNING",
+                            progress=min(95, max(5, after_progress)),
+                            status_message=f"Core Web Vitals: {index}/{total} завершено",
+                            progress_meta={
+                                "processed_pages": index,
+                                "total_pages": total,
+                                "queue_size": max(0, total - index),
+                                "current_url": target_url,
+                            },
+                        )
+
+                    batch_payload = _build_core_web_vitals_batch_result(
                         strategy=strategy,
                         source=source,
                         sites=sites,
                     )
-                failed_count = int((batch_payload.get("summary") or {}).get("failed_urls") or 0)
-                success_count = int((batch_payload.get("summary") or {}).get("successful_urls") or 0)
-                status_message = (
-                    f"Batch Core Web Vitals завершен: успех {success_count}, ошибки {failed_count}"
-                    if failed_count > 0
-                    else f"Batch Core Web Vitals завершен: проверено {success_count} URL"
-                )
-                if competitor_mode:
+                    if competitor_mode:
+                        batch_payload = _build_core_web_vitals_competitor_result(
+                            strategy=strategy,
+                            source=source,
+                            sites=sites,
+                        )
+                    failed_count = int((batch_payload.get("summary") or {}).get("failed_urls") or 0)
+                    success_count = int((batch_payload.get("summary") or {}).get("successful_urls") or 0)
                     status_message = (
-                        f"Конкурентный анализ CWV завершен: успех {success_count}, ошибки {failed_count}"
+                        f"Batch Core Web Vitals завершен: успех {success_count}, ошибки {failed_count}"
                         if failed_count > 0
-                        else f"Конкурентный анализ CWV завершен: сравнение по {success_count} URL"
+                        else f"Batch Core Web Vitals завершен: проверено {success_count} URL"
                     )
-                result_payload = {
-                    "task_type": "core_web_vitals",
-                    "url": normalized_urls[0],
-                    "results": batch_payload,
-                }
-                update_task_state(
-                    task_id,
-                    status="SUCCESS",
-                    progress=100,
-                    status_message=status_message,
-                    progress_meta={
-                        "processed_pages": total,
-                        "total_pages": total,
-                        "queue_size": 0,
-                        "current_url": normalized_urls[-1] if normalized_urls else "",
-                        "competitor_mode": competitor_mode,
-                    },
-                    result=result_payload,
-                    error=None,
-                )
-            except Exception as exc:
-                update_task_state(
-                    task_id,
-                    status="FAILURE",
-                    progress=100,
-                    status_message="Ошибка batch Core Web Vitals сканирования",
-                    error=str(exc),
-                )
+                    if competitor_mode:
+                        status_message = (
+                            f"Конкурентный анализ CWV завершен: успех {success_count}, ошибки {failed_count}"
+                            if failed_count > 0
+                            else f"Конкурентный анализ CWV завершен: сравнение по {success_count} URL"
+                        )
+                    result_payload = {
+                        "task_type": "core_web_vitals",
+                        "url": normalized_urls[0],
+                        "results": batch_payload,
+                    }
+                    update_task_state(
+                        task_id,
+                        status="SUCCESS",
+                        progress=100,
+                        status_message=status_message,
+                        progress_meta={
+                            "processed_pages": total,
+                            "total_pages": total,
+                            "queue_size": 0,
+                            "current_url": normalized_urls[-1] if normalized_urls else "",
+                            "competitor_mode": competitor_mode,
+                        },
+                        result=result_payload,
+                        error=None,
+                    )
+                except Exception as exc:
+                    update_task_state(
+                        task_id,
+                        status="FAILURE",
+                        progress=100,
+                        status_message="Ошибка batch Core Web Vitals сканирования",
+                        error=str(exc),
+                    )
 
         background_tasks.add_task(_run_core_web_vitals_batch_task)
         return {
@@ -873,50 +877,51 @@ async def create_core_web_vitals(data: CoreWebVitalsRequest, background_tasks: B
     print(f"[API] Core Web Vitals single queued for: {url}, strategy={strategy}, task_id={task_id}")
 
     def _run_core_web_vitals_single_task() -> None:
-        try:
-            update_task_state(
-                task_id,
-                status="RUNNING",
-                progress=10,
-                status_message="Запуск Core Web Vitals сканирования",
-                progress_meta={
-                    "processed_pages": 0,
-                    "total_pages": 1,
-                    "queue_size": 1,
-                    "current_url": url,
-                },
-            )
-            result = check_core_web_vitals(url, strategy=strategy, use_proxy=bool(data.use_proxy), combined=bool(data.combined))
-            update_task_state(
-                task_id,
-                status="SUCCESS",
-                progress=100,
-                status_message="Core Web Vitals scan completed",
-                progress_meta={
-                    "processed_pages": 1,
-                    "total_pages": 1,
-                    "queue_size": 0,
-                    "current_url": url,
-                },
-                result=result,
-                error=None,
-            )
-        except ValueError as exc:
-            update_task_state(
-                task_id,
-                status="FAILURE",
-                progress=100,
-                status_message="Ошибка Core Web Vitals сканирования",
-                error=str(exc),
-            )
-        except Exception as exc:
-            update_task_state(
-                task_id,
-                status="FAILURE",
-                progress=100,
-                status_message="Ошибка Core Web Vitals сканирования",
-                error=f"Core Web Vitals scan failed: {exc}",
-            )
+        with scan_token_context(scan_token):
+            try:
+                update_task_state(
+                    task_id,
+                    status="RUNNING",
+                    progress=10,
+                    status_message="Запуск Core Web Vitals сканирования",
+                    progress_meta={
+                        "processed_pages": 0,
+                        "total_pages": 1,
+                        "queue_size": 1,
+                        "current_url": url,
+                    },
+                )
+                result = check_core_web_vitals(url, strategy=strategy, use_proxy=bool(data.use_proxy), combined=bool(data.combined))
+                update_task_state(
+                    task_id,
+                    status="SUCCESS",
+                    progress=100,
+                    status_message="Core Web Vitals scan completed",
+                    progress_meta={
+                        "processed_pages": 1,
+                        "total_pages": 1,
+                        "queue_size": 0,
+                        "current_url": url,
+                    },
+                    result=result,
+                    error=None,
+                )
+            except ValueError as exc:
+                update_task_state(
+                    task_id,
+                    status="FAILURE",
+                    progress=100,
+                    status_message="Ошибка Core Web Vitals сканирования",
+                    error=str(exc),
+                )
+            except Exception as exc:
+                update_task_state(
+                    task_id,
+                    status="FAILURE",
+                    progress=100,
+                    status_message="Ошибка Core Web Vitals сканирования",
+                    error=f"Core Web Vitals scan failed: {exc}",
+                )
 
     background_tasks.add_task(_run_core_web_vitals_single_task)
     return {

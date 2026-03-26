@@ -15,6 +15,7 @@ import requests
 from bs4 import BeautifulSoup
 
 from app.config import settings
+from app.core.scan_token import get_scan_token_headers
 from app.tools.http_text import decode_response_text
 
 
@@ -553,6 +554,10 @@ class RenderAuditServiceV2:
                 "viewport": ctx_kwargs.get("viewport"),
                 "user_agent": ctx_kwargs.get("user_agent", ua),
             }
+
+            extra_headers = get_scan_token_headers()
+            if extra_headers:
+                ctx_kwargs["extra_http_headers"] = {str(k): str(v) for k, v in extra_headers.items()}
 
             ctx = browser.new_context(**ctx_kwargs)
             page = ctx.new_page()

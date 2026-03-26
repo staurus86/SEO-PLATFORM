@@ -116,9 +116,11 @@ async function startLlmCrawlerTask(event) {
     }
 
     try {
+        const spEnabled = typeof window._spTokenCheckboxEnabled === 'function' ? window._spTokenCheckboxEnabled(form) : false;
+        const spHeaders = typeof window._buildSpTokenHeaders === 'function' ? window._buildSpTokenHeaders(spEnabled) : {};
         const response = await fetch(`${LLM_API_BASE}/run`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json', ...spHeaders },
             body: JSON.stringify(payload),
         });
         const data = await response.json().catch(() => ({}));

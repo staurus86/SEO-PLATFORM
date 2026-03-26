@@ -3,7 +3,7 @@ import time
 from datetime import datetime
 from typing import Any, Dict, List
 
-from fastapi import APIRouter, BackgroundTasks
+from fastapi import APIRouter, BackgroundTasks, Request
 from pydantic import BaseModel
 
 from app.api.routers._task_store import (
@@ -11,6 +11,7 @@ from app.api.routers._task_store import (
     create_task_result,
     update_task_state,
 )
+from app.core.scan_token import capture_scan_token_from_request, scan_token_context
 
 router = APIRouter(tags=["Batch"])
 
@@ -24,7 +25,7 @@ class BatchRequest(BaseModel):
 
 
 @router.post("/tasks/batch")
-async def create_batch_task(data: BatchRequest, background_tasks: BackgroundTasks):
+async def create_batch_task(data: BatchRequest, background_tasks: BackgroundTasks, request: Request):
     urls = [u.strip() for u in data.urls if u.strip()][:50]  # max 50 URLs
     if not urls:
         return {"error": "No valid URLs provided"}
@@ -36,43 +37,44 @@ async def create_batch_task(data: BatchRequest, background_tasks: BackgroundTask
         urls[0],
         status_message=f"Batch {data.tool}: {len(urls)} URLs queued",
     )
+    scan_token = capture_scan_token_from_request(request)
 
     def _run_batch():
-        results: List[Dict[str, Any]] = []
-        total = len(urls)
+        with scan_token_context(scan_token):
+            results: List[Dict[str, Any]] = []
+            total = len(urls)
 
-        for i, url in enumerate(urls):
-            pct = int((i / total) * 100)
-            update_task_state(
+            for i, url in enumerate(urls):
+                pct = int((i / total) * 100)
+                update_task_state(
+                    task_id,
+                    status="RUNNING",
+                    progress=pct,
+                    status_message=f"Processing {i + 1}/{total}: {url[:60]}",
+                )
+
+                try:
+                    result = _run_single_tool(data.tool, url, data.use_proxy, data.options)
+                    results.append({"url": url, "status": "success", "result": result})
+                except Exception as e:
+                    results.append({"url": url, "status": "error", "error": str(e)})
+
+            success_count = sum(1 for r in results if r["status"] == "success")
+            summary = {
+                "task_type": f"batch_{data.tool}",
+                "tool": data.tool,
+                "total_urls": total,
+                "success": success_count,
+                "errors": total - success_count,
+                "completed_at": datetime.utcnow().isoformat(),
+            }
+
+            create_task_result(
                 task_id,
-                status="RUNNING",
-                progress=pct,
-                status_message=f"Processing {i + 1}/{total}: {url[:60]}",
+                f"batch_{data.tool}",
+                urls[0],
+                {"summary": summary, "items": results},
             )
-
-            try:
-                result = _run_single_tool(data.tool, url, data.use_proxy, data.options)
-                results.append({"url": url, "status": "success", "result": result})
-            except Exception as e:
-                results.append({"url": url, "status": "error", "error": str(e)})
-
-        # Build summary
-        success_count = sum(1 for r in results if r["status"] == "success")
-        summary = {
-            "task_type": f"batch_{data.tool}",
-            "tool": data.tool,
-            "total_urls": total,
-            "success": success_count,
-            "errors": total - success_count,
-            "completed_at": datetime.utcnow().isoformat(),
-        }
-
-        create_task_result(
-            task_id,
-            f"batch_{data.tool}",
-            urls[0],
-            {"summary": summary, "items": results},
-        )
 
     background_tasks.add_task(_run_batch)
     return {"task_id": task_id, "urls_count": len(urls), "tool": data.tool}

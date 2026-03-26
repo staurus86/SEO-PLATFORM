@@ -13,6 +13,7 @@ import requests
 from bs4 import BeautifulSoup
 
 from app.config import settings
+from app.core.scan_token import get_scan_token_headers
 from app.tools.http_text import decode_response_text
 
 
@@ -398,6 +399,7 @@ class MobileCheckServiceV2:
         with sync_playwright() as p:
             _notify(12, "Запуск браузерного движка")
             launch_kwargs = {"headless": True}
+            extra_headers = get_scan_token_headers()
             if self.use_proxy:
                 from app.proxy import get_playwright_proxy
                 _pw_proxy = get_playwright_proxy()
@@ -411,13 +413,16 @@ class MobileCheckServiceV2:
                 _notify(12 + int(((device_idx - 1) / total_devices) * 80), f"Проверка {device.name} ({device_idx}/{total_devices})")
                 shot_name = f"mobile_{_slug(domain)}_{stamp}_{_slug(device.name)}.png"
                 shot_path = shot_dir / shot_name
-                context = browser.new_context(
-                    viewport={"width": device.width, "height": device.height},
-                    device_scale_factor=device.dpr,
-                    is_mobile=True,
-                    has_touch=True,
-                    user_agent=device.user_agent,
-                )
+                context_kwargs = {
+                    "viewport": {"width": device.width, "height": device.height},
+                    "device_scale_factor": device.dpr,
+                    "is_mobile": True,
+                    "has_touch": True,
+                    "user_agent": device.user_agent,
+                }
+                if extra_headers:
+                    context_kwargs["extra_http_headers"] = extra_headers
+                context = browser.new_context(**context_kwargs)
                 page = context.new_page()
                 # Apply network throttling for realistic mobile testing
                 self._apply_throttling(context, page)
@@ -504,13 +509,16 @@ class MobileCheckServiceV2:
                 landscape_viewport = {"width": device.height, "height": device.width}
                 shot_name = f"mobile_{_slug(domain)}_{stamp}_{_slug(device.name)}_landscape.png"
                 shot_path = shot_dir / shot_name
-                context = browser.new_context(
-                    viewport=landscape_viewport,
-                    device_scale_factor=device.dpr,
-                    is_mobile=True,
-                    has_touch=True,
-                    user_agent=device.user_agent,
-                )
+                landscape_context_kwargs = {
+                    "viewport": landscape_viewport,
+                    "device_scale_factor": device.dpr,
+                    "is_mobile": True,
+                    "has_touch": True,
+                    "user_agent": device.user_agent,
+                }
+                if extra_headers:
+                    landscape_context_kwargs["extra_http_headers"] = extra_headers
+                context = browser.new_context(**landscape_context_kwargs)
                 page = context.new_page()
                 # Apply network throttling for landscape pass as well
                 self._apply_throttling(context, page)
